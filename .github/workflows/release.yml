@@ -1,0 +1,60 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting and types
+        run: pnpm check
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Package release files
+        run: |
+          mkdir -p release
+          tar -czf release/remote-page-agent-${GITHUB_REF_NAME}.tar.gz \
+            --exclude='node_modules' \
+            --exclude='*.tsbuildinfo' \
+            README.md LICENSE package.json pnpm-lock.yaml pnpm-workspace.yaml \
+            packages/remote-userscript/dist \
+            packages/remote-userscript/package.json \
+            packages/cdp-bridge/dist \
+            packages/cdp-bridge/package.json
+          cp packages/remote-userscript/dist/remote-agent.user.js \
+            release/remote-agent.user.js
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --generate-notes \
+            --title "${GITHUB_REF_NAME}" \
+            release/*

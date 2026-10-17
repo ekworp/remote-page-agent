@@ -1,0 +1,14 @@
+{
+  "name": "remote-page-agent",
+  "private": true,
+  "packageManager": "pnpm@11.27.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm --filter @remote-page-agent/cdp-bridge dev",
+    "format": "biome format --write .",
+    "check": "biome check . && pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.0"
+  }
+}
