@@ -5,8 +5,14 @@
 // @description  Connect a page to the remote-page-agent CDP bridge.
 // @match        *://*/*
 // @run-at       document-start
-// @grant        none
+// @grant        GM_registerMenuCommand
+// @grant        GM_getValue
+// @grant        GM_setValue
 // ==/UserScript==
+
+declare function GM_registerMenuCommand(caption: string, onClick: () => void): void;
+declare function GM_getValue<T>(key: string, defaultValue?: T): T;
+declare function GM_setValue<T>(key: string, value: T): void;
 
 type AgentRequest = {
   id: string;
@@ -14,11 +20,127 @@ type AgentRequest = {
   payload?: Record<string, unknown>;
 };
 
-const bridgeUrl = "ws://YOUR_SERVER_HOST:8787/agent";
-const deviceId = localStorage.getItem("remote-page-agent-device") ?? crypto.randomUUID();
-localStorage.setItem("remote-page-agent-device", deviceId);
+const bridgeStorageKey = "remote-page-agent-bridge-url";
+const defaultBridgeUrl = "ws://localhost:9222/agent";
+const browserIdStorageKey = "remote-page-agent-browser-id";
+const browserId = GM_getValue<string>(browserIdStorageKey, "") || crypto.randomUUID();
+GM_setValue(browserIdStorageKey, browserId);
+const pageId = crypto.randomUUID();
 
 let socket: WebSocket | undefined;
+let notice: HTMLDivElement | undefined;
+let statusIcon: SVGSVGElement | undefined;
+
+type NoticeKind = "info" | "success" | "error";
+
+function showNotice(message: string, kind: NoticeKind = "info"): void {
+  if (!notice) {
+    const element = document.createElement("div");
+    notice = element;
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML =
+      '<path d="M9 15l-1.5 1.5a3.5 3.5 0 0 1-5-5L6 8"/><path d="M15 9l1.5-1.5a3.5 3.5 0 0 1 5 5L18 16"/><path d="M8 12h8"/>';
+    statusIcon = icon;
+    element.append(icon);
+    element.setAttribute("data-remote-page-agent", "notice");
+    element.style.cssText = [
+      "position: fixed",
+      "right: 16px",
+      "bottom: 16px",
+      "z-index: 2147483647",
+      "width: 32px",
+      "height: 32px",
+      "padding: 6px",
+      "border-radius: 50%",
+      "background: rgba(17, 24, 39, .9)",
+      "box-shadow: 0 4px 16px rgba(0, 0, 0, .25)",
+      "pointer-events: auto",
+      "touch-action: none",
+      "user-select: none",
+      "-webkit-user-select: none",
+      "cursor: grab",
+      "opacity: 0",
+      "transition: opacity .2s ease",
+    ].join(";");
+    icon.style.cssText =
+      "display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;";
+    let dragging = false;
+    let offsetX = 0;
+    let offsetY = 0;
+    element.addEventListener("pointerdown", (event) => {
+      dragging = true;
+      const bounds = element.getBoundingClientRect();
+      offsetX = event.clientX - bounds.left;
+      offsetY = event.clientY - bounds.top;
+      element.style.cursor = "grabbing";
+      element.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    element.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      element.style.left = `${event.clientX - offsetX}px`;
+      element.style.top = `${event.clientY - offsetY}px`;
+      element.style.right = "auto";
+      element.style.bottom = "auto";
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    const stopDragging = (event: PointerEvent): void => {
+      dragging = false;
+      element.style.cursor = "grab";
+      if (element.hasPointerCapture(event.pointerId))
+        element.releasePointerCapture(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    element.addEventListener("pointerup", stopDragging);
+    element.addEventListener("pointercancel", stopDragging);
+    element.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  }
+
+  const colors: Record<NoticeKind, string> = {
+    info: "#f59e0b",
+    success: "#22c55e",
+    error: "#ef4444",
+  };
+  notice.title = message;
+  notice.setAttribute("aria-label", message);
+  if (statusIcon) statusIcon.style.color = colors[kind];
+  const parent = document.body ?? document.documentElement;
+  if (!notice.isConnected) parent.append(notice);
+  requestAnimationFrame(() => {
+    if (notice) notice.style.opacity = "1";
+  });
+}
+
+function getBridgeUrl(): string {
+  return GM_getValue<string>(bridgeStorageKey, defaultBridgeUrl).trim();
+}
+
+function configureBridge(): void {
+  const current = getBridgeUrl();
+  const value = window.prompt("Remote Page Agent WebSocket URL", current || defaultBridgeUrl);
+  if (value === null) return;
+
+  const url = value.trim();
+  if (url !== "" && !/^wss?:\/\//.test(url)) {
+    window.alert("The bridge URL must start with ws:// or wss://");
+    return;
+  }
+  GM_setValue(bridgeStorageKey, url || defaultBridgeUrl);
+  socket?.close();
+  socket = undefined;
+  showNotice(url ? `Bridge configured: ${url}` : `Bridge reset to ${defaultBridgeUrl}`);
+  connect();
+}
+
+GM_registerMenuCommand("Configure Remote Page Agent", configureBridge);
 
 function send(message: unknown): void {
   if (socket?.readyState === WebSocket.OPEN) {
@@ -31,12 +153,14 @@ function response(id: string, result: unknown): void {
 }
 
 function failure(id: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  showNotice(`Command failed: ${message}`, "error");
   send({
     id,
     ok: false,
     error: {
       code: "COMMAND_FAILED",
-      message: error instanceof Error ? error.message : String(error),
+      message,
     },
   });
 }
@@ -113,11 +237,16 @@ async function execute(request: AgentRequest): Promise<void> {
 }
 
 function connect(): void {
-  socket = new WebSocket(bridgeUrl);
-  socket.addEventListener("open", () => {
-    send({ type: "hello", deviceId, url: location.href, title: document.title });
+  const bridgeUrl = getBridgeUrl();
+  if (!bridgeUrl) return;
+  showNotice("Connecting to Remote Page Agent", "info");
+  const currentSocket = new WebSocket(bridgeUrl);
+  socket = currentSocket;
+  currentSocket.addEventListener("open", () => {
+    showNotice("Remote Page Agent connected", "success");
+    send({ type: "hello", browserId, pageId, url: location.href, title: document.title });
   });
-  socket.addEventListener("message", (event) => {
+  currentSocket.addEventListener("message", (event) => {
     try {
       const request = JSON.parse(String(event.data)) as AgentRequest;
       void execute(request).catch((error) => failure(request.id, error));
@@ -125,7 +254,13 @@ function connect(): void {
       console.error("Remote Page Agent message error", error);
     }
   });
-  socket.addEventListener("close", () => window.setTimeout(connect, 3000));
+  currentSocket.addEventListener("close", () => {
+    if (socket === currentSocket) showNotice("Remote Page Agent disconnected", "error");
+    if (socket === currentSocket && getBridgeUrl()) window.setTimeout(connect, 3000);
+  });
+  currentSocket.addEventListener("error", () => {
+    if (socket === currentSocket) showNotice("Remote Page Agent connection error", "error");
+  });
 }
 
 for (const method of ["log", "warn", "error"] as const) {

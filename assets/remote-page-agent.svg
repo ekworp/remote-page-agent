@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none" role="img" aria-labelledby="rpa-title rpa-desc">
+  <title id="rpa-title">Remote Page Agent 图标</title>
+  <desc id="rpa-desc">深靛蓝色圆角背景上，一枚蓝紫色浏览器窗口与白色指针，右上角的连接节点代表远程控制。</desc>
+  <defs>
+    <linearGradient id="rpa-bg" x1="24" y1="16" x2="232" y2="256" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#24263F"/>
+      <stop offset="1" stop-color="#10111F"/>
+    </linearGradient>
+    <linearGradient id="rpa-frame" x1="53" y1="64" x2="192" y2="193" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C4CCFF"/>
+      <stop offset="0.52" stop-color="#929FF2"/>
+      <stop offset="1" stop-color="#8275DB"/>
+    </linearGradient>
+    <linearGradient id="rpa-pane" x1="64" y1="79" x2="175" y2="185" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#353B60"/>
+      <stop offset="1" stop-color="#20243D"/>
+    </linearGradient>
+    <linearGradient id="rpa-pointer" x1="132" y1="126" x2="188" y2="200" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E1E5F5"/>
+    </linearGradient>
+    <radialGradient id="rpa-glow" cx="0" cy="0" r="1" gradientTransform="translate(184 65) rotate(135) scale(176)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9A8CF0" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#9A8CF0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Rounded app tile with a restrained highlight. -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#rpa-bg)"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#rpa-glow)"/>
+  <rect x="8.75" y="8.75" width="238.5" height="238.5" rx="55.25" stroke="#FFFFFF" stroke-opacity="0.09" stroke-width="1.5"/>
+
+  <!-- Browser silhouette; the upper-right opening leads to the remote node. -->
+  <rect x="50" y="68" width="144" height="124" rx="23" fill="#090A14" fill-opacity="0.25"/>
+  <rect x="52" y="62" width="140" height="124" rx="21" fill="url(#rpa-pane)"/>
+  <path d="M156 62H73C61.402 62 52 71.402 52 83V165C52 176.598 61.402 186 73 186H119M192 111V140" stroke="url(#rpa-frame)" stroke-width="9" stroke-linecap="round"/>
+  <path d="M57 98H163" stroke="#AAB5F2" stroke-opacity="0.38" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="73" cy="80" r="4" fill="#D1D8FF"/>
+  <circle cx="88" cy="80" r="4" fill="#A4AFE8" fill-opacity="0.7"/>
+  <circle cx="103" cy="80" r="4" fill="#A4AFE8" fill-opacity="0.4"/>
+  <path d="M75 124H107M75 140H96" stroke="#A0A8CC" stroke-opacity="0.65" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- Connection node. -->
+  <path d="M166 89L184 71" stroke="url(#rpa-frame)" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="194" cy="61" r="21" fill="#A99AF5" fill-opacity="0.1"/>
+  <circle cx="194" cy="61" r="13" fill="#B3A5F5"/>
+  <circle cx="190" cy="57" r="4" fill="#F0EBFF" fill-opacity="0.85"/>
+
+  <!-- Oversized pointer stays legible at small sizes. -->
+  <path d="M132 123L134 184L149 171L165 199C166.657 201.87 170.326 202.853 173.196 201.196L182.722 195.696C185.592 194.039 186.575 190.37 184.918 187.5L169 160L189 154L132 123Z" fill="#071524" stroke="#071524" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M132 123L134 184L149 171L165 199C166.657 201.87 170.326 202.853 173.196 201.196L182.722 195.696C185.592 194.039 186.575 190.37 184.918 187.5L169 160L189 154L132 123Z" fill="url(#rpa-pointer)" stroke="url(#rpa-pointer)" stroke-width="3" stroke-linejoin="round"/>
+</svg>
