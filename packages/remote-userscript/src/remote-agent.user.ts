@@ -45,9 +45,19 @@ type DomSummary = {
 const bridgeStorageKey = "remote-page-agent-bridge-url";
 const defaultBridgeUrl = "ws://localhost:9222/agent";
 const browserIdStorageKey = "remote-page-agent-browser-id";
+const pageIdStorageKey = "remote-page-agent-page-id";
 const browserId = GM_getValue<string>(browserIdStorageKey, "") || crypto.randomUUID();
 GM_setValue(browserIdStorageKey, browserId);
-const pageId = crypto.randomUUID();
+let pageId = "";
+try {
+  pageId = sessionStorage.getItem(pageIdStorageKey) ?? "";
+  if (!pageId) {
+    pageId = crypto.randomUUID();
+    sessionStorage.setItem(pageIdStorageKey, pageId);
+  }
+} catch {
+  pageId = crypto.randomUUID();
+}
 
 // DOM backend node ids are synthetic because the userscript has no access to
 // Chrome's real DOM agent. Keep a stable WeakMap so ids do not shift when the
@@ -307,58 +317,132 @@ function accessibilityRole(element: Element): string {
   if (/^h[1-6]$/.test(tag)) return "heading";
   if (tag === "a" && element.getAttribute("href")) return "link";
   if (tag === "button") return "button";
-  if (tag === "textarea" || tag === "select") return "combobox";
+  if (tag === "textarea") return "textbox";
+  if (tag === "select") return "combobox";
   if (tag === "input") {
-    return element.getAttribute("type") === "checkbox" ? "checkbox" : "textbox";
+    const type = (element.getAttribute("type") ?? "text").toLowerCase();
+    if (type === "hidden") return "none";
+    if (type === "checkbox") return "checkbox";
+    if (type === "radio") return "radio";
+    if (type === "search") return "searchbox";
+    return "textbox";
   }
   if (tag === "img") return "image";
   if (tag === "nav") return "navigation";
   if (tag === "main") return "main";
+  if (tag === "table") return "table";
+  if (tag === "tr") return "row";
+  if (tag === "th") return "columnheader";
+  if (tag === "td") return "cell";
   if (tag === "ul" || tag === "ol") return "list";
   if (tag === "li") return "listitem";
   return "generic";
 }
 
 function accessibilityName(element: Element): string {
-  return (
-    element.getAttribute("aria-label") ??
-    element.getAttribute("alt") ??
-    (element instanceof HTMLInputElement ? element.placeholder : "") ??
-    element.textContent ??
-    ""
-  )
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 500);
+  const ariaLabel = element.getAttribute("aria-label");
+  if (ariaLabel) return normalizeAccessibilityName(ariaLabel);
+
+  const labelledBy = element.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const labelledText = labelledBy
+      .split(/\s+/)
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ");
+    if (labelledText.trim()) return normalizeAccessibilityName(labelledText);
+  }
+
+  const alt = element.getAttribute("alt");
+  if (alt) return normalizeAccessibilityName(alt);
+  const title = element.getAttribute("title");
+  if (title) return normalizeAccessibilityName(title);
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    if (element.placeholder) return normalizeAccessibilityName(element.placeholder);
+  }
+
+  // Plain layout containers often contain the entire page's text. Treating
+  // that text as their accessible name defeats tree compaction and produces
+  // enormous duplicate names. Semantic elements still use rendered text.
+  const role = accessibilityRole(element);
+  const renderedText = element instanceof HTMLElement ? element.innerText : "";
+  const text = normalizeAccessibilityName(renderedText || element.textContent || "");
+  if (role === "generic" || role === "none") {
+    return text.length <= 80 ? text : "";
+  }
+  return text;
+}
+
+function normalizeAccessibilityName(value: string): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function isHiddenFromAccessibilityTree(element: Element): boolean {
+  if (element instanceof HTMLInputElement && element.type === "hidden") return true;
+  if (element.hasAttribute("hidden") || element.getAttribute("aria-hidden") === "true") {
+    return true;
+  }
+  const checkVisibility = (
+    element as Element & {
+      checkVisibility?: (options?: {
+        checkOpacity?: boolean;
+        checkVisibilityCSS?: boolean;
+      }) => boolean;
+    }
+  ).checkVisibility;
+  if (typeof checkVisibility === "function") {
+    return !checkVisibility.call(element, {
+      checkOpacity: false,
+      checkVisibilityCSS: true,
+    });
+  }
+  const style = getComputedStyle(element);
+  return style.display === "none" || style.visibility === "hidden";
+}
+
+function isTransparentAccessibilityNode(role: string, name: string): boolean {
+  return !name && (role === "generic" || role === "none");
 }
 
 function accessibilityTree(depth = 32): AccessibilityNode[] {
   pruneBackendNodeMap();
   const maxNodes = 3000;
   const nodes: AccessibilityNode[] = [];
-  const visit = (element: Element, level: number): string => {
+  const visit = (element: Element, level: number): string[] => {
+    if (isHiddenFromAccessibilityTree(element) || nodes.length >= maxNodes) return [];
     const backendNodeId = backendNodeIdFor(element);
     const nodeId = String(backendNodeId);
     const children: string[] = [];
+    const name = accessibilityName(element);
+    const role = accessibilityRole(element);
+    if (level < depth) {
+      for (const child of Array.from(element.children)) {
+        if (nodes.length >= maxNodes) break;
+        children.push(...visit(child, level + 1));
+      }
+    }
+    // Layout-only wrappers are common on search pages. Flatten them while
+    // retaining descendants, especially links and form controls.
+    if (isTransparentAccessibilityNode(role, name)) return children;
+    if (role === "generic" || role === "none") {
+      const onlyChild =
+        children.length === 1
+          ? nodes.find((candidate) => candidate.nodeId === children[0])
+          : undefined;
+      if (onlyChild?.name?.value === name) return children;
+    }
+
     const node: AccessibilityNode = {
       nodeId,
       backendDOMNodeId: backendNodeId,
       backendNodeId,
       ignored: false,
-      role: { type: "role", value: accessibilityRole(element) },
+      role: { type: "role", value: role },
       properties: [],
       childIds: children,
     };
-    const name = accessibilityName(element);
     if (name) node.name = { type: "computedString", value: name };
     nodes.push(node);
-    if (level < depth && nodes.length < maxNodes) {
-      for (const child of Array.from(element.children)) {
-        if (nodes.length >= maxNodes) break;
-        children.push(visit(child, level + 1));
-      }
-    }
-    return nodeId;
+    return [nodeId];
   };
   const root: AccessibilityNode = {
     nodeId: "root",
@@ -371,7 +455,7 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
     childIds: [],
   };
   nodes.push(root);
-  if (document.body) root.childIds.push(visit(document.body, 0));
+  if (document.body) root.childIds.push(...visit(document.body, 0));
   return nodes;
 }
 
@@ -429,15 +513,355 @@ function domNode(element: Element, depth: number, maxChildren = 5000): Record<st
   return node;
 }
 
-function domRect(element: Element): { x: number; y: number; width: number; height: number } {
+type DomRectSnapshot = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  top: number;
+  left: number;
+  right: number;
+  bottom: number;
+};
+
+const clickableSelector = [
+  "a[href]",
+  "button",
+  "[role=button]",
+  "input",
+  "select",
+  "textarea",
+  "label",
+  "summary",
+  "[onclick]",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+function rectSnapshot(rect: DOMRect): DomRectSnapshot {
+  return {
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    top: rect.top,
+    left: rect.left,
+    right: rect.right,
+    bottom: rect.bottom,
+  };
+}
+
+function domRect(element: Element): DomRectSnapshot {
+  return rectSnapshot(element.getBoundingClientRect());
+}
+
+function hasLayoutBox(element: Element): boolean {
+  if (!element.isConnected) return false;
   const rect = element.getBoundingClientRect();
-  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  return rect.width > 0 && rect.height > 0;
+}
+
+function isClickableElement(element: Element): boolean {
+  return (
+    element.matches(clickableSelector) ||
+    (element instanceof HTMLElement && element.onclick !== null)
+  );
+}
+
+function isEditableElement(element: Element): element is HTMLElement {
+  return (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement ||
+    (element instanceof HTMLElement &&
+      (element.isContentEditable || element.getAttribute("contenteditable") === "true"))
+  );
+}
+
+function resolveEditableTarget(element: Element): Element {
+  if (isEditableElement(element)) return element;
+  const descendant = element.querySelector(
+    "input, textarea, select, [contenteditable='true'], [contenteditable='']",
+  );
+  return descendant ?? element;
+}
+
+/**
+ * AX nodes often point at a generic wrapper. Prefer the nearest clickable
+ * ancestor, otherwise the element itself, an actionable descendant, or the
+ * nearest ancestor that at least has a layout box.
+ */
+function resolveClickTarget(element: Element): Element {
+  // A textbox inside a label has a clickable ancestor, but clicking/filling the
+  // label instead of the input would be wrong.
+  if (isEditableElement(element) && hasLayoutBox(element)) return element;
+
+  const ancestry: Element[] = [];
+  let current: Element | null = element;
+  while (current && ancestry.length < 12) {
+    ancestry.push(current);
+    current = current.parentElement;
+  }
+
+  for (const candidate of ancestry.slice(1)) {
+    if (isClickableElement(candidate) && hasLayoutBox(candidate)) return candidate;
+  }
+  if (hasLayoutBox(element)) return element;
+
+  const descendant = element.querySelector(clickableSelector);
+  if (descendant && hasLayoutBox(descendant)) return descendant;
+
+  for (const candidate of ancestry) {
+    if (hasLayoutBox(candidate)) return candidate;
+  }
+  return element;
+}
+
+function describeElement(element: Element): Record<string, unknown> {
+  return {
+    backendNodeId: backendNodeIdFor(element),
+    tagName: element.tagName.toLowerCase(),
+    className: typeof element.className === "string" ? element.className.slice(0, 120) : undefined,
+  };
+}
+
+function immediateScrollIntoView(element: Element): void {
+  const changed: Array<{ element: HTMLElement; previous: string }> = [];
+  let current: Element | null = element;
+  while (current) {
+    if (current instanceof HTMLElement) {
+      const style = getComputedStyle(current);
+      const scrollable =
+        /(auto|scroll)/.test(style.overflowY) || /(auto|scroll)/.test(style.overflowX);
+      if (scrollable) {
+        changed.push({ element: current, previous: current.style.scrollBehavior });
+        current.style.scrollBehavior = "auto";
+      }
+    }
+    current = current.parentElement;
+  }
+  element.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+  for (const { element: scrollable, previous } of changed) {
+    scrollable.style.scrollBehavior = previous;
+  }
+}
+
+function createValueEvent(type: "beforeinput" | "input", data: string, inputType: string): Event {
+  try {
+    return new InputEvent(type, {
+      bubbles: true,
+      cancelable: type === "beforeinput",
+      data,
+      inputType,
+    });
+  } catch {
+    return new Event(type, { bubbles: true, cancelable: type === "beforeinput" });
+  }
+}
+
+function dispatchBeforeInput(element: Element, value: string, inputType = "insertText"): boolean {
+  return element.dispatchEvent(createValueEvent("beforeinput", value, inputType));
+}
+
+function dispatchInputAndChange(element: Element, value: string, inputType = "insertText"): void {
+  element.dispatchEvent(createValueEvent("input", value, inputType));
+  element.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function inputKind(element: Element): string {
+  if (element instanceof HTMLSelectElement) return "select";
+  if (element instanceof HTMLTextAreaElement) return "typeable-input";
+  if (element instanceof HTMLInputElement) {
+    switch (element.type) {
+      case "checkbox":
+      case "radio":
+        return "checkable-input";
+      case "text":
+      case "url":
+      case "tel":
+      case "search":
+      case "password":
+      case "number":
+      case "email":
+        return "typeable-input";
+      default:
+        return "other-input";
+    }
+  }
+  switch (element.getAttribute("role")) {
+    case "checkbox":
+    case "radio":
+    case "switch":
+      return "checkable-input";
+  }
+  if (element instanceof HTMLElement && element.isContentEditable) return "contenteditable";
+  return "unknown";
+}
+
+function currentEditableValue(element: Element): string {
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement
+  ) {
+    return element.value;
+  }
+  if (element instanceof HTMLElement && element.isContentEditable) return element.innerText;
+  return "";
+}
+
+function selectedOptionValues(element: HTMLSelectElement, values: string[]): string[] {
+  const wanted = new Set(values);
+  const options = Array.from(element.options);
+  for (const option of options) {
+    if (!element.multiple) option.selected = false;
+  }
+  const selected: string[] = [];
+  for (const option of options) {
+    const matches = wanted.has(option.value) || wanted.has((option.textContent ?? "").trim());
+    if (element.multiple) {
+      option.selected = matches;
+    } else if (matches && selected.length === 0) {
+      option.selected = true;
+    }
+    if (option.selected) selected.push(option.value);
+  }
+  return selected;
+}
+
+function fillElement(
+  element: Element,
+  value: string | boolean | string[],
+): Record<string, unknown> {
+  if (element instanceof HTMLSelectElement) {
+    const values = Array.isArray(value) ? value.map(String) : [String(value)];
+    const eventValue = values.join(",");
+    if (!dispatchBeforeInput(element, eventValue)) {
+      return { cancelled: true, value: element.value, ...describeElement(element) };
+    }
+    const selected = selectedOptionValues(element, values);
+    dispatchInputAndChange(element, eventValue);
+    return { value: element.value, selected, ...describeElement(element) };
+  }
+  if (element instanceof HTMLInputElement) {
+    element.focus();
+    if (element.type === "checkbox" || element.type === "radio") {
+      if (!dispatchBeforeInput(element, String(value))) {
+        return { cancelled: true, checked: element.checked, ...describeElement(element) };
+      }
+      element.checked = value === true || value === "true";
+      dispatchInputAndChange(element, String(element.checked));
+      return { value: element.value, checked: element.checked, ...describeElement(element) };
+    }
+    if (typeof value !== "string") throw new Error("Input value must be a string");
+    if (element.value === value) {
+      return { unchanged: true, value: element.value, ...describeElement(element) };
+    }
+    if (!dispatchBeforeInput(element, value)) {
+      return { cancelled: true, value: element.value, ...describeElement(element) };
+    }
+    element.value = value;
+    try {
+      element.setSelectionRange(value.length, value.length);
+    } catch {
+      // Some input types do not support selection ranges.
+    }
+    dispatchInputAndChange(element, value);
+    return { value: element.value, ...describeElement(element) };
+  }
+  if (element instanceof HTMLTextAreaElement) {
+    if (typeof value !== "string") throw new Error("Textarea value must be a string");
+    element.focus();
+    if (element.value === value) {
+      return { unchanged: true, value: element.value, ...describeElement(element) };
+    }
+    if (!dispatchBeforeInput(element, value)) {
+      return { cancelled: true, value: element.value, ...describeElement(element) };
+    }
+    element.value = value;
+    element.setSelectionRange(value.length, value.length);
+    dispatchInputAndChange(element, value);
+    return { value: element.value, ...describeElement(element) };
+  }
+  if (element instanceof HTMLElement && element.isContentEditable) {
+    if (typeof value !== "string") throw new Error("Contenteditable value must be a string");
+    element.focus();
+    if (element.innerText === value) {
+      return { unchanged: true, value: element.innerText, ...describeElement(element) };
+    }
+    if (!dispatchBeforeInput(element, value)) {
+      return { cancelled: true, value: element.innerText, ...describeElement(element) };
+    }
+    element.innerText = value;
+    dispatchInputAndChange(element, value);
+    return { value: element.innerText, ...describeElement(element) };
+  }
+  throw new Error("Element does not support a value");
+}
+
+function isCheckableElement(element: Element): boolean {
+  if (element instanceof HTMLInputElement) {
+    return element.type === "checkbox" || element.type === "radio";
+  }
+  const role = element.getAttribute("role");
+  return role === "checkbox" || role === "radio" || role === "switch";
+}
+
+function currentCheckedState(element: Element): boolean | "mixed" {
+  if (element instanceof HTMLInputElement) {
+    if (element.indeterminate) return "mixed";
+    return element.checked;
+  }
+  const aria = element.getAttribute("aria-checked");
+  if (aria === "mixed") return "mixed";
+  return aria === "true";
+}
+
+function insertText(element: Element, text: string): Record<string, unknown> {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    element.focus();
+    if (!dispatchBeforeInput(element, text)) {
+      return { cancelled: true, value: element.value, ...describeElement(element) };
+    }
+    const start = element.selectionStart ?? element.value.length;
+    const end = element.selectionEnd ?? start;
+    element.value = `${element.value.slice(0, start)}${text}${element.value.slice(end)}`;
+    try {
+      const caret = start + text.length;
+      element.setSelectionRange(caret, caret);
+    } catch {
+      // Some input types do not support selection ranges.
+    }
+    dispatchInputAndChange(element, text);
+    return { value: element.value, ...describeElement(element) };
+  }
+  if (element instanceof HTMLElement && element.isContentEditable) {
+    element.focus();
+    if (!dispatchBeforeInput(element, text)) {
+      return { cancelled: true, value: element.innerText, ...describeElement(element) };
+    }
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0 && element.contains(selection.anchorNode)) {
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const node = document.createTextNode(text);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } else {
+      element.textContent = `${element.textContent ?? ""}${text}`;
+    }
+    dispatchInputAndChange(element, text);
+    return { value: element.innerText, ...describeElement(element) };
+  }
+  throw new Error("Active element does not support text insertion");
 }
 
 function domOperation(
   operation: string,
   backendNodeId: number,
-  _payload: Record<string, unknown>,
+  payload: Record<string, unknown>,
 ): unknown {
   if (operation === "document_size") {
     return {
@@ -447,48 +871,133 @@ function domOperation(
   }
   const element = elementByBackendNodeId(backendNodeId);
   if (!element) throw new Error(`DOM node not found: ${backendNodeId}`);
+  const clickTarget = resolveClickTarget(element);
+  const editableTarget = resolveEditableTarget(element);
   switch (operation) {
-    case "click":
-      if (!(element instanceof HTMLElement)) throw new Error("DOM node is not an HTMLElement");
-      element.click();
-      return { clicked: true };
+    case "click": {
+      const anchor = clickTarget.closest("a[href]");
+      window.setTimeout(() => {
+        if (!clickTarget.isConnected) return;
+        if (clickTarget instanceof HTMLElement) {
+          clickTarget.click();
+        } else {
+          clickTarget.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        }
+      }, 0);
+      return {
+        clicked: true,
+        scheduledClick: true,
+        navigationHint:
+          anchor instanceof HTMLAnchorElement
+            ? anchor.target === "_blank"
+              ? "popup"
+              : "navigation"
+            : undefined,
+        ...describeElement(clickTarget),
+      };
+    }
     case "rect":
-      return domRect(element);
+      return domRect(clickTarget);
     case "client_rects":
-      return Array.from(element.getClientRects(), (rect) => ({
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height,
-      }));
+      return Array.from(clickTarget.getClientRects(), rectSnapshot);
     case "stable_rects":
       return new Promise((resolve) => {
-        requestAnimationFrame(() => {
-          const first = domRect(element);
-          requestAnimationFrame(() => resolve([first, domRect(element)]));
-        });
+        const finish = (): void => {
+          // Report the same final rect twice. Puppeteer only needs to know
+          // that the element has a stable box; measuring twice while a
+          // carousel or lazy image is animating can otherwise never settle.
+          const rect = domRect(clickTarget);
+          resolve([rect, rect]);
+        };
+        requestAnimationFrame(() => requestAnimationFrame(finish));
+        window.setTimeout(finish, 250);
       });
-    case "is_intersecting": // Puppeteer uses this as an actionability guard. A real browser reports
-      // viewport intersection, but the bridge performs the actual scroll and
-      // click through the userscript, so IntersectionObserver can incorrectly
-      // remain false inside mobile scrolling containers. Use a deterministic
-      // connected/non-zero-size check instead.
-      {
-        const rect = element.getBoundingClientRect();
-        return element.isConnected && rect.width > 0 && rect.height > 0;
-      }
+    case "is_intersecting": {
+      const rect = clickTarget.getBoundingClientRect();
+      // Let Puppeteer's scrollIntoViewIfNeeded path handle viewport and
+      // nested-scroller visibility. Requiring intersection here makes
+      // off-screen media cards fail actionability before they can be scrolled.
+      return clickTarget.isConnected && rect.width > 0 && rect.height > 0;
+    }
     case "assert_connected":
       if (!element.isConnected) return "Node is detached from document";
       if (element.nodeType !== Node.ELEMENT_NODE) return "Node is not of type HTMLElement";
       return null;
     case "is_svg":
-      return element instanceof SVGElement;
+      return clickTarget instanceof SVGElement;
     case "scroll_into_view":
-      element.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
-      return { scrolled: true };
+      immediateScrollIntoView(clickTarget);
+      return { scrolled: true, rect: domRect(clickTarget), ...describeElement(clickTarget) };
     case "focus":
-      if (element instanceof HTMLElement) element.focus();
-      return { focused: true };
+      if (editableTarget instanceof HTMLElement) editableTarget.focus();
+      return { focused: true, ...describeElement(editableTarget) };
+    case "get_input_kind":
+      return inputKind(editableTarget);
+    case "get_enabled": {
+      const ariaDisabled = editableTarget.getAttribute("aria-disabled") === "true";
+      const disabled =
+        editableTarget instanceof HTMLInputElement ||
+        editableTarget instanceof HTMLButtonElement ||
+        editableTarget instanceof HTMLTextAreaElement ||
+        editableTarget instanceof HTMLSelectElement ||
+        editableTarget instanceof HTMLOptionElement
+          ? editableTarget.disabled
+          : false;
+      return !disabled && !ariaDisabled;
+    }
+    case "get_value":
+      return currentEditableValue(editableTarget);
+    case "is_checkable":
+      return isCheckableElement(editableTarget);
+    case "get_checked":
+      return currentCheckedState(editableTarget);
+    case "fill":
+    case "set_value": {
+      const values = payload.values;
+      const value = Array.isArray(values) ? values.map(String) : payload.value;
+      if (typeof value !== "string" && typeof value !== "boolean" && !Array.isArray(value)) {
+        throw new Error("value is required");
+      }
+      return fillElement(editableTarget, value);
+    }
+    case "select_option": {
+      if (!(editableTarget instanceof HTMLSelectElement)) {
+        throw new Error("Element is not a select");
+      }
+      const values = Array.isArray(payload.values)
+        ? payload.values.map(String)
+        : [String(payload.value ?? "")];
+      return fillElement(editableTarget, values);
+    }
+    case "inspect_element": {
+      const rect = editableTarget.getBoundingClientRect();
+      return {
+        ...describeElement(editableTarget),
+        inputType: editableTarget instanceof HTMLInputElement ? editableTarget.type : undefined,
+        placeholder:
+          editableTarget instanceof HTMLInputElement ||
+          editableTarget instanceof HTMLTextAreaElement
+            ? editableTarget.placeholder
+            : undefined,
+        disabled:
+          editableTarget instanceof HTMLInputElement ||
+          editableTarget instanceof HTMLTextAreaElement ||
+          editableTarget instanceof HTMLSelectElement
+            ? editableTarget.disabled
+            : undefined,
+        readOnly:
+          editableTarget instanceof HTMLInputElement ||
+          editableTarget instanceof HTMLTextAreaElement
+            ? editableTarget.readOnly
+            : undefined,
+        contentEditable:
+          editableTarget instanceof HTMLElement ? editableTarget.isContentEditable : false,
+        connected: editableTarget.isConnected,
+        rect: rectSnapshot(rect),
+        clientRectCount: editableTarget.getClientRects().length,
+        editable: isEditableElement(editableTarget),
+      };
+    }
     case "parent": {
       const parent = element.parentElement;
       if (!parent) return null;
@@ -508,16 +1017,25 @@ function domOperation(
   }
 }
 
-function dispatchInput(payload: Record<string, unknown>): void {
+function elementAtPoint(x: number, y: number): Element | null {
+  // The agent status badge is fixed on top of the page. Never let it swallow a
+  // remote click.
+  const stack = document.elementsFromPoint(x, y);
+  const hit = stack.find((element) => !element.closest("[data-remote-page-agent]"));
+  return hit ?? document.elementFromPoint(x, y);
+}
+
+function dispatchInput(payload: Record<string, unknown>): Record<string, unknown> {
   const selectorValue = typeof payload.selector === "string" ? payload.selector : "";
   const x = Number(payload.x ?? 0);
   const y = Number(payload.y ?? 0);
-  const element =
-    (selectorValue ? document.querySelector(selectorValue) : null) ??
-    document.elementFromPoint(x, y) ??
-    document.body;
-  if (!(element instanceof HTMLElement)) throw new Error("input target not found");
   const type = typeof payload.type === "string" ? payload.type : "click";
+  const hit =
+    (selectorValue ? document.querySelector(selectorValue) : null) ??
+    (type.startsWith("key") || type === "char" ? document.activeElement : elementAtPoint(x, y));
+  const element = hit ?? document.body;
+  if (!(element instanceof HTMLElement)) throw new Error("input target not found");
+  const clickTarget = resolveClickTarget(element);
   const buttonValue = payload.button;
   const button =
     typeof buttonValue === "number"
@@ -534,6 +1052,15 @@ function dispatchInput(payload: Record<string, unknown>): void {
     shiftKey: Boolean(modifiersValue & 8),
     metaKey: Boolean(modifiersValue & 4),
   };
+  const result = {
+    type,
+    x,
+    y,
+    button,
+    hit: describeElement(element),
+    target: describeElement(clickTarget),
+    usedClick: false,
+  };
   if (type.startsWith("key") || type === "char") {
     element.dispatchEvent(
       new KeyboardEvent(type === "keyUp" ? "keyup" : type === "char" ? "keypress" : "keydown", {
@@ -544,7 +1071,19 @@ function dispatchInput(payload: Record<string, unknown>): void {
         ...modifiers,
       }),
     );
-    return;
+    if (type === "keyDown" && payload.key === "Enter") {
+      const form = element.closest("form");
+      if (form instanceof HTMLFormElement) {
+        if (typeof form.requestSubmit === "function") form.requestSubmit();
+        else form.submit();
+      } else if (element instanceof HTMLInputElement) {
+        const submit = document.querySelector<HTMLButtonElement>(
+          "button[type=submit], input[type=submit]",
+        );
+        submit?.click();
+      }
+    }
+    return result;
   }
   const mouseInit: MouseEventInit = {
     bubbles: true,
@@ -557,22 +1096,40 @@ function dispatchInput(payload: Record<string, unknown>): void {
   };
   if (type === "mouseMoved") {
     element.dispatchEvent(new MouseEvent("mousemove", mouseInit));
-    return;
+    return result;
   }
   if (type === "mousePressed") {
-    element.dispatchEvent(new MouseEvent("mousedown", mouseInit));
-    return;
+    clickTarget.dispatchEvent(new MouseEvent("mousedown", mouseInit));
+    return result;
   }
   if (type === "mouseReleased") {
-    element.dispatchEvent(new MouseEvent("mouseup", mouseInit));
-    element.dispatchEvent(
-      new MouseEvent("click", {
-        ...mouseInit,
-        buttons: 0,
-        detail: Number(payload.clickCount ?? 1),
-      }),
-    );
-    return;
+    clickTarget.dispatchEvent(new MouseEvent("mouseup", mouseInit));
+    const anchor = clickTarget.closest("a[href]");
+    const navigationHint =
+      anchor instanceof HTMLAnchorElement
+        ? anchor.target === "_blank"
+          ? "popup"
+          : "navigation"
+        : undefined;
+    // Send the CDP response before activating the element. A navigation or
+    // target="_blank" popup can destroy this document immediately; doing
+    // click() synchronously would race the WebSocket response and leave the
+    // MCP tool waiting for a dead page.
+    window.setTimeout(() => {
+      if (!clickTarget.isConnected) return;
+      if (clickTarget instanceof HTMLElement) {
+        clickTarget.click();
+      } else {
+        clickTarget.dispatchEvent(
+          new MouseEvent("click", {
+            ...mouseInit,
+            buttons: 0,
+            detail: Number(payload.clickCount ?? 1),
+          }),
+        );
+      }
+    }, 0);
+    return { ...result, scheduledClick: true, navigationHint };
   }
   if (type === "mouseWheel") {
     element.dispatchEvent(
@@ -583,6 +1140,7 @@ function dispatchInput(payload: Record<string, unknown>): void {
       }),
     );
   }
+  return result;
 }
 
 async function execute(request: AgentRequest): Promise<void> {
@@ -614,19 +1172,25 @@ async function execute(request: AgentRequest): Promise<void> {
       return;
     }
     case "input": {
-      const element = selector(payload);
+      const element = resolveEditableTarget(selector(payload));
       const value = payload.value;
-      if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
-        throw new Error("Element is not an input or textarea");
-      }
-      if (typeof value !== "string") {
+      if (typeof value !== "string" && typeof value !== "boolean") {
         throw new Error("value is required");
       }
-      element.focus();
-      element.value = value;
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-      element.dispatchEvent(new Event("change", { bubbles: true }));
-      response(request.id, { input: true });
+      if (!isEditableElement(element)) {
+        throw new Error("Element is not editable");
+      }
+      response(request.id, fillElement(element, value));
+      return;
+    }
+    case "insert_text": {
+      const value = payload.text;
+      if (typeof value !== "string") throw new Error("text is required");
+      const element = document.activeElement;
+      if (!element || !isEditableElement(element)) {
+        throw new Error("Active element is not editable");
+      }
+      response(request.id, insertText(element, value));
       return;
     }
     case "scroll": {
@@ -665,23 +1229,37 @@ async function execute(request: AgentRequest): Promise<void> {
       window.stop();
       response(request.id, { ok: true });
       return;
-    case "dispatch_input":
-      dispatchInput(payload);
-      response(request.id, { ok: true });
+    case "dispatch_input": {
+      const result = dispatchInput(payload);
+      response(request.id, result);
       return;
+    }
     case "click_backend_node": {
       const backendNodeId = Number(payload.backendNodeId);
       const element = elementByBackendNodeId(backendNodeId);
-      if (!(element instanceof HTMLElement)) throw new Error("DOM node not found");
-      element.click();
-      response(request.id, { clicked: true, backendNodeId });
+      if (!element) throw new Error("DOM node not found");
+      const target = resolveClickTarget(element);
+      window.setTimeout(() => {
+        if (!target.isConnected) return;
+        if (target instanceof HTMLElement) {
+          target.click();
+        } else {
+          target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        }
+      }, 0);
+      response(request.id, {
+        clicked: true,
+        scheduledClick: true,
+        backendNodeId,
+        ...describeElement(target),
+      });
       return;
     }
     case "get_dom_rect": {
       const backendNodeId = Number(payload.backendNodeId);
       const element = elementByBackendNodeId(backendNodeId);
-      if (!(element instanceof HTMLElement)) throw new Error("DOM node not found");
-      response(request.id, domRect(element));
+      if (!element) throw new Error("DOM node not found");
+      response(request.id, domRect(resolveClickTarget(element)));
       return;
     }
     case "dom_operation": {
@@ -776,8 +1354,17 @@ function connect(): void {
   });
   currentSocket.addEventListener("message", (event) => {
     try {
-      const request = JSON.parse(String(event.data)) as AgentRequest;
-      void execute(request).catch((error) => failure(request.id, error));
+      const message = JSON.parse(String(event.data)) as AgentRequest & { pageId?: string };
+      if (message.type === "hello_ack" && typeof message.pageId === "string") {
+        pageId = message.pageId;
+        try {
+          sessionStorage.setItem(pageIdStorageKey, pageId);
+        } catch {
+          // Storage can be unavailable in private or sandboxed contexts.
+        }
+        return;
+      }
+      void execute(message).catch((error) => failure(message.id, error));
     } catch (error) {
       console.error("Remote Page Agent message error", error);
     }
@@ -800,7 +1387,7 @@ window.addEventListener("load", () => {
     timestamp: Date.now() / 1000,
   });
 });
-window.addEventListener("popstate", () => {
+function announceNavigation(): void {
   pageEvent("Page.frameNavigated", {
     frame: {
       id: pageId,
@@ -809,7 +1396,46 @@ window.addEventListener("popstate", () => {
       mimeType: "text/html",
     },
   });
-});
+  pageEvent("Page.navigatedWithinDocument", {
+    frameId: pageId,
+    url: location.href,
+  });
+  pageEvent("Page.lifecycleEvent", {
+    frameId: pageId,
+    loaderId: pageId,
+    name: "load",
+    timestamp: Date.now() / 1000,
+  });
+}
+
+function scheduleNavigationAnnouncement(): void {
+  window.setTimeout(announceNavigation, 0);
+}
+
+window.addEventListener("popstate", scheduleNavigationAnnouncement);
+window.addEventListener("hashchange", scheduleNavigationAnnouncement);
+
+const originalPushState = history.pushState;
+history.pushState = function (
+  this: History,
+  data: unknown,
+  unused: string,
+  url?: string | URL | null,
+): void {
+  originalPushState.call(this, data, unused, url);
+  scheduleNavigationAnnouncement();
+};
+
+const originalReplaceState = history.replaceState;
+history.replaceState = function (
+  this: History,
+  data: unknown,
+  unused: string,
+  url?: string | URL | null,
+): void {
+  originalReplaceState.call(this, data, unused, url);
+  scheduleNavigationAnnouncement();
+};
 
 for (const method of ["log", "warn", "error"] as const) {
   const original = console[method];

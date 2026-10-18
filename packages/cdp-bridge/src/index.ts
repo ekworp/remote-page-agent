@@ -46,6 +46,8 @@ type PageConnection = {
 
 type PendingRequest = {
   pageId: string;
+  type: string;
+  interruptible: boolean;
   resolve: (message: AgentMessage) => void;
 };
 
@@ -56,10 +58,17 @@ const sessions = new Map<string, string>();
 const functionHandles = new Map<string, string>();
 const domHandles = new Map<string, number>();
 const pollerHandles = new Set<string>();
+const pollerResults = new Map<string, boolean>();
 const fakeObjectHandles = new Set<string>();
 const executionContextIds = new Map<string, Map<string, number>>();
+const sessionOwners = new Map<string, WebSocket>();
+const autoAttachClients = new Set<WebSocket>();
+const autoAttachedTargetsByClient = new Map<WebSocket, Set<string>>();
+const discoveredTargetsByClient = new Map<WebSocket, Set<string>>();
 let nextExecutionContextId = 1;
 const cdpDebug = process.env.CDP_DEBUG === "1" || process.env.CDP_DEBUG === "true";
+const pageReconnectGraceMs = Number(process.env.PAGE_RECONNECT_GRACE_MS ?? 10_000);
+const reconnectTimers = new Map<string, NodeJS.Timeout>();
 
 function publicUrl(path: string): string {
   return `${publicOrigin}${path}`;
@@ -77,9 +86,103 @@ function broadcastPageEvent(pageId: string, method: string, params: Record<strin
   }
 }
 
+function markTargetCreated(socket: WebSocket, page: PageConnection): boolean {
+  let discovered = discoveredTargetsByClient.get(socket);
+  if (!discovered) {
+    discovered = new Set();
+    discoveredTargetsByClient.set(socket, discovered);
+  }
+  if (discovered.has(page.pageId)) return false;
+  discovered.add(page.pageId);
+  send(socket, cdpEvent("Target.targetCreated", { targetInfo: pageTarget(page) }));
+  return true;
+}
+
+function sendCurrentTargets(socket: WebSocket): void {
+  for (const page of pages.values()) markTargetCreated(socket, page);
+}
+
+function attachPage(socket: WebSocket, page: PageConnection): string {
+  let attached = autoAttachedTargetsByClient.get(socket);
+  if (!attached) {
+    attached = new Set();
+    autoAttachedTargetsByClient.set(socket, attached);
+  }
+  if (attached.has(page.pageId)) {
+    return "";
+  }
+  attached.add(page.pageId);
+  const sessionId = randomUUID();
+  sessions.set(sessionId, page.pageId);
+  sessionOwners.set(sessionId, socket);
+  send(
+    socket,
+    cdpEvent("Target.attachedToTarget", {
+      sessionId,
+      targetInfo: { ...pageTarget(page), attached: true },
+      waitingForDebugger: false,
+    }),
+  );
+  return sessionId;
+}
+
+function detachPageSessions(pageId: string): void {
+  for (const [sessionId, sessionPageId] of sessions) {
+    if (sessionPageId !== pageId) continue;
+    const owner = sessionOwners.get(sessionId);
+    if (owner && owner.readyState === owner.OPEN) {
+      send(
+        owner,
+        cdpEvent("Target.detachedFromTarget", {
+          sessionId,
+          targetId: pageId,
+        }),
+      );
+    }
+    sessions.delete(sessionId);
+    sessionOwners.delete(sessionId);
+    executionContextIds.delete(sessionId);
+  }
+}
+
+function notifyNewPage(page: PageConnection): void {
+  for (const client of clients) {
+    if (client.readyState === client.OPEN) markTargetCreated(client, page);
+  }
+  for (const client of autoAttachClients) {
+    if (client.readyState !== client.OPEN) {
+      autoAttachClients.delete(client);
+      continue;
+    }
+    attachPage(client, page);
+  }
+}
+
+function notifyPageUpdated(page: PageConnection): void {
+  broadcast(cdpEvent("Target.targetInfoChanged", { targetInfo: pageTarget(page) }));
+}
+
+function destroyPage(pageId: string): void {
+  const page = pages.get(pageId);
+  if (!page) return;
+  detachPageSessions(pageId);
+  pages.delete(pageId);
+  reconnectTimers.delete(pageId);
+  for (const [client, discovered] of discoveredTargetsByClient) {
+    discovered.delete(pageId);
+    if (client.readyState !== client.OPEN) discoveredTargetsByClient.delete(client);
+  }
+  for (const [client, attached] of autoAttachedTargetsByClient) {
+    attached.delete(pageId);
+    if (client.readyState !== client.OPEN) autoAttachedTargetsByClient.delete(client);
+  }
+  broadcast(cdpEvent("Target.targetDestroyed", { targetId: pageId }));
+  logConnection(`Page disconnected: browser=${page.browserId}, page=${pageId}`);
+}
+
 function summarizeFunctionDeclaration(source: string): string {
-  const firstLine = source.split("\n", 1)[0]?.trim() ?? "";
-  return `${firstLine.slice(0, 120)}${source.length > firstLine.length || firstLine.length > 120 ? "…" : ""}`;
+  const normalized = source.replace(/\s+/g, " ").trim();
+  return `${normalized.slice(0, 500)}${normalized.length > 500 ? "…" : ""}`;
 }
 
 function logCdp(direction: "recv" | "send", value: unknown): void {
@@ -102,6 +205,7 @@ function logCdp(direction: "recv" | "send", value: unknown): void {
       details.push(`executionContextId=${String(params.executionContextId)}`);
     if (message.method === "Runtime.callFunctionOn") {
       if (typeof params.functionDeclaration === "string") {
+        details.push(`functionLength=${params.functionDeclaration.length}`);
         details.push(`function=${summarizeFunctionDeclaration(params.functionDeclaration)}`);
       }
       const args = Array.isArray(params.arguments) ? params.arguments : [];
@@ -137,6 +241,39 @@ function logCdp(direction: "recv" | "send", value: unknown): void {
 
 function json(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function logDomDebug(message: string, details?: unknown): void {
+  if (!cdpDebug) return;
+  console.log(`[dom] ${message}${details === undefined ? "" : ` ${json(details)}`}`);
+}
+
+function summarizeRect(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  const rect = value as Record<string, unknown>;
+  const keys = ["x", "y", "width", "height", "top", "left", "right", "bottom"];
+  const summary: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (typeof rect[key] === "number") summary[key] = Math.round((rect[key] as number) * 100) / 100;
+  }
+  return summary;
+}
+
+function summarizeDomResult(operation: string, value: unknown): unknown {
+  if (operation === "client_rects" && Array.isArray(value)) {
+    return {
+      count: value.length,
+      rects: value.slice(0, 4).map(summarizeRect),
+    };
+  }
+  if (operation === "stable_rects" && Array.isArray(value)) {
+    return value.map(summarizeRect);
+  }
+  if (operation === "scroll_into_view" && typeof value === "object" && value !== null) {
+    const item = value as Record<string, unknown>;
+    return { ...item, rect: summarizeRect(item.rect) };
+  }
+  return value;
 }
 
 function send(socket: WebSocket, value: unknown): void {
@@ -292,6 +429,7 @@ function requestAgent(
   page: PageConnection,
   type: string,
   payload: Record<string, unknown> = {},
+  options: { interruptible?: boolean } = {},
 ): Promise<AgentMessage> {
   if (page.socket.readyState !== page.socket.OPEN) {
     return Promise.reject(new Error(`Page is disconnected: ${page.pageId}`));
@@ -304,6 +442,8 @@ function requestAgent(
     }, 15_000);
     pending.set(id, {
       pageId: page.pageId,
+      type,
+      interruptible: options.interruptible ?? false,
       resolve: (message) => {
         clearTimeout(timer);
         resolve(message);
@@ -338,12 +478,20 @@ function domHandleForCall(
   if (typeof objectId === "string" && domHandles.has(objectId)) {
     return { objectId, backendNodeId: domHandles.get(objectId) as number };
   }
+  if (typeof objectId === "string") {
+    const parsed = /^dom:(\d+):/.exec(objectId);
+    if (parsed) return { objectId, backendNodeId: Number(parsed[1]) };
+  }
   for (const argument of argumentsList) {
     if (typeof argument.objectId === "string" && domHandles.has(argument.objectId)) {
       return {
         objectId: argument.objectId,
         backendNodeId: domHandles.get(argument.objectId) as number,
       };
+    }
+    if (typeof argument.objectId === "string") {
+      const parsed = /^dom:(\d+):/.exec(argument.objectId);
+      if (parsed) return { objectId: argument.objectId, backendNodeId: Number(parsed[1]) };
     }
   }
   return undefined;
@@ -363,18 +511,180 @@ function pollerObjectIdForCall(
   return undefined;
 }
 
+type DomNodeInfo = {
+  localName: string;
+  attributes: Map<string, string>;
+};
+
+async function getDomNodeInfo(
+  page: PageConnection,
+  backendNodeId: number,
+): Promise<DomNodeInfo | undefined> {
+  const result = await requestAgent(page, "get_dom_node", { backendNodeId, depth: 0 });
+  if (!result.ok) return undefined;
+  const node = result.result as { localName?: string; nodeName?: string; attributes?: unknown[] };
+  const attributes = new Map<string, string>();
+  if (Array.isArray(node.attributes)) {
+    for (let index = 0; index + 1 < node.attributes.length; index += 2) {
+      attributes.set(String(node.attributes[index]), String(node.attributes[index + 1]));
+    }
+  }
+  return {
+    localName: (node.localName ?? node.nodeName ?? "").toLowerCase(),
+    attributes,
+  };
+}
+
+function inputKindFromNode(node: DomNodeInfo): string {
+  const type = (node.attributes.get("type") ?? "text").toLowerCase();
+  if (node.localName === "select") return "select";
+  if (node.localName === "textarea") return "typeable-input";
+  if (node.localName === "input") {
+    if (type === "checkbox" || type === "radio") return "checkable-input";
+    if (["text", "url", "tel", "search", "password", "number", "email"].includes(type)) {
+      return "typeable-input";
+    }
+    return "other-input";
+  }
+  const role = node.attributes.get("role");
+  if (role === "checkbox" || role === "radio" || role === "switch") return "checkable-input";
+  const contenteditable = node.attributes.get("contenteditable");
+  if (contenteditable === "true" || contenteditable === "") return "contenteditable";
+  return "unknown";
+}
+
+function isCheckableNode(node: DomNodeInfo): boolean {
+  const type = (node.attributes.get("type") ?? "").toLowerCase();
+  if (node.localName === "input" && (type === "checkbox" || type === "radio")) return true;
+  const role = node.attributes.get("role");
+  return role === "checkbox" || role === "radio" || role === "switch";
+}
+
+async function getEnabledOperation(
+  page: PageConnection,
+  backendNodeId: number,
+): Promise<Record<string, unknown>> {
+  try {
+    return await domOperation(page, backendNodeId, "get_enabled");
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("Unsupported DOM operation")) {
+      throw error;
+    }
+    const node = await getDomNodeInfo(page, backendNodeId);
+    const disabled =
+      node !== undefined &&
+      (node.attributes.has("disabled") || node.attributes.get("aria-disabled") === "true");
+    return { type: "boolean", value: !disabled };
+  }
+}
+
+async function inputKindOperation(
+  page: PageConnection,
+  backendNodeId: number,
+): Promise<Record<string, unknown>> {
+  try {
+    return await domOperation(page, backendNodeId, "get_input_kind");
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("Unsupported DOM operation")) {
+      throw error;
+    }
+    const node = await getDomNodeInfo(page, backendNodeId);
+    return { type: "string", value: node ? inputKindFromNode(node) : "unknown" };
+  }
+}
+
+async function isCheckableOperation(
+  page: PageConnection,
+  backendNodeId: number,
+): Promise<Record<string, unknown>> {
+  try {
+    return await domOperation(page, backendNodeId, "is_checkable");
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("Unsupported DOM operation")) {
+      throw error;
+    }
+    const node = await getDomNodeInfo(page, backendNodeId);
+    return { type: "boolean", value: node ? isCheckableNode(node) : false };
+  }
+}
+
+async function enabledOperation(
+  page: PageConnection,
+  backendNodeId: number,
+): Promise<Record<string, unknown>> {
+  const node = await getDomNodeInfo(page, backendNodeId);
+  const disabled =
+    node?.attributes.has("disabled") || node?.attributes.get("aria-disabled") === "true";
+  return { type: "boolean", value: !disabled };
+}
+
+async function fillOperation(
+  page: PageConnection,
+  backendNodeId: number,
+  value: string | boolean | string[],
+): Promise<Record<string, unknown>> {
+  try {
+    return await domOperation(page, backendNodeId, "fill", { value });
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("Unsupported DOM operation")) {
+      throw error;
+    }
+    // Older userscript builds only implement set_value. Keep them working for
+    // basic input/textarea/select fills.
+    return domOperation(page, backendNodeId, "set_value", { value });
+  }
+}
+
+async function selectOptionOperation(
+  page: PageConnection,
+  backendNodeId: number,
+  values: string[],
+): Promise<Record<string, unknown>> {
+  try {
+    return await domOperation(page, backendNodeId, "select_option", { values });
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("Unsupported DOM operation")) {
+      throw error;
+    }
+    return domOperation(page, backendNodeId, "set_value", { value: values[0] ?? "" });
+  }
+}
+
 async function domOperation(
   page: PageConnection,
   backendNodeId: number,
   operation: string,
   payload: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
-  const result = await requestAgent(page, "dom_operation", {
-    backendNodeId,
-    operation,
-    ...payload,
-  });
-  if (!result.ok) throw new Error(result.error?.message ?? `DOM operation failed: ${operation}`);
+  const result = await requestAgent(
+    page,
+    "dom_operation",
+    {
+      backendNodeId,
+      operation,
+      ...payload,
+    },
+    { interruptible: operation === "click" },
+  );
+  if (!result.ok) {
+    logDomDebug(`${operation} failed`, { backendNodeId, error: result.error?.message });
+    throw new Error(result.error?.message ?? `DOM operation failed: ${operation}`);
+  }
+  const sensitiveOperations = new Set([
+    "attributes",
+    "outer_html",
+    "fill",
+    "set_value",
+    "get_value",
+    "insert_text",
+    "inspect_element",
+  ]);
+  if (!sensitiveOperations.has(operation)) {
+    logDomDebug(
+      `${operation} backend=${backendNodeId}`,
+      summarizeDomResult(operation, result.result),
+    );
+  }
   return remoteObjectForResult(result);
 }
 
@@ -393,15 +703,25 @@ async function tryHandleDomCall(
   const argumentValues = argumentsList
     .filter((argument) => !argument.objectId)
     .map((argument) => argument.value);
+  const domHandle = domHandleForCall(message, argumentsList);
 
   if (/RAFPoller|IntervalPoller|MutationPoller/.test(functionDeclaration)) {
     const objectId = `poller:${randomUUID()}`;
     pollerHandles.add(objectId);
+    const predicate = argumentValues.find((value) => typeof value === "string");
+    let enabled = true;
+    if (domHandle && typeof predicate === "string" && /disabled/i.test(predicate)) {
+      const state = await getEnabledOperation(page, domHandle.backendNodeId);
+      enabled = state.value === true;
+    }
+    pollerResults.set(objectId, enabled);
     return { type: "object", className: "Object", objectId, description: "Poller" };
   }
 
-  if (pollerObjectIdForCall(message, argumentsList)) {
-    if (/\.result\s*\(/.test(functionDeclaration)) return { type: "boolean", value: true };
+  const pollerObjectId = pollerObjectIdForCall(message, argumentsList);
+  if (pollerObjectId) {
+    const enabled = pollerResults.get(pollerObjectId) ?? true;
+    if (/\.result\s*\(/.test(functionDeclaration)) return { type: "boolean", value: enabled };
     return { type: "undefined" };
   }
 
@@ -414,28 +734,118 @@ async function tryHandleDomCall(
     return domOperation(page, 0, "document_size");
   }
 
-  const domHandle = domHandleForCall(message, argumentsList);
   if (!domHandle) return undefined;
   const backendNodeId = domHandle.backendNodeId;
+  const textOrBooleanValue = argumentValues.find(
+    (value) => typeof value === "string" || typeof value === "boolean",
+  );
+
+  // McpPage.fillFormElements() checks whether the element is a checkbox/radio
+  // before deciding between locator.fill() and the boolean toggle path.
+  if (
+    /instanceof HTMLInputElement/.test(functionDeclaration) &&
+    /checkbox/.test(functionDeclaration) &&
+    /radio/.test(functionDeclaration) &&
+    /getAttribute\(['"]role['"]\)/.test(functionDeclaration) &&
+    /switch/.test(functionDeclaration) &&
+    !/HTMLSelectElement|HTMLTextAreaElement|isContentEditable/.test(functionDeclaration)
+  ) {
+    return isCheckableOperation(page, backendNodeId);
+  }
+
+  // Locator.fill() first probes the element type with a function that returns
+  // "typeable-input" / "checkable-input" / "select" / "contenteditable".
+  if (
+    /instanceof HTMLSelectElement/.test(functionDeclaration) &&
+    /isContentEditable/.test(functionDeclaration) &&
+    /return\s+['"]/.test(functionDeclaration)
+  ) {
+    return inputKindOperation(page, backendNodeId);
+  }
+
+  // Locator.fill() on a <select> evaluates the options directly.
+  const stringArrayValue = argumentValues.find(
+    (value) => Array.isArray(value) && value.every((item) => typeof item === "string"),
+  );
+  if (
+    stringArrayValue !== undefined &&
+    /option\.selected|selectedValues|HTMLSelectElement/.test(functionDeclaration)
+  ) {
+    return selectOptionOperation(page, backendNodeId, stringArrayValue as string[]);
+  }
+
+  // Checkbox/radio actionability helper.
+  if (/indeterminate/.test(functionDeclaration) && /aria-checked/.test(functionDeclaration)) {
+    return domOperation(page, backendNodeId, "get_checked");
+  }
+
+  // Locator actionability probes disabled controls before clicking. Resolve
+  // that fixed property query through DOM attributes so generic cards and
+  // framework-managed containers do not time out in the poller.
+  if (/\.disabled\b|aria-disabled/.test(functionDeclaration)) {
+    return enabledOperation(page, backendNodeId);
+  }
+
+  // Short text fill (< typingThreshold): Puppeteer computes the text that is
+  // still missing and then calls handle.type(). We set the final value in one
+  // fixed operation and return an empty suffix so Puppeteer does not re-type it.
+  if (
+    textOrBooleanValue !== undefined &&
+    /startsWith/.test(functionDeclaration) &&
+    /substring/.test(functionDeclaration) &&
+    /isContentEditable|\.value/.test(functionDeclaration)
+  ) {
+    await fillOperation(page, backendNodeId, textOrBooleanValue);
+    return { type: "string", value: "" };
+  }
+
+  // fillDirectly() for long values and non-standard input types.
+  if (
+    textOrBooleanValue !== undefined &&
+    /(\.value\s*=|\.innerText\s*=)/.test(functionDeclaration) &&
+    /dispatchEvent|new Event|InputEvent/.test(functionDeclaration)
+  ) {
+    await fillOperation(page, backendNodeId, textOrBooleanValue);
+    return { type: "undefined" };
+  }
+
+  // Existing explicit value setter support (kept for compatibility).
+  if (
+    textOrBooleanValue !== undefined &&
+    /\.value\s*=|setRangeText|setSelectionRange|checked\s*=|setValue|InputEvent|inputType/.test(
+      functionDeclaration,
+    ) &&
+    !/getProperty|propertyDescriptor|startsWith/.test(functionDeclaration)
+  ) {
+    await fillOperation(page, backendNodeId, textOrBooleanValue);
+    return { type: "undefined" };
+  }
 
   if (/IntersectionObserver/.test(functionDeclaration)) {
     const threshold =
       argumentValues.find((value) => typeof value === "number") ??
       numberParam(message.params?.threshold) ??
       0;
+    // threshold 1 is used by scrollIntoViewIfNeeded. Force the scroll path
+    // directly instead of relying on browser-side intersection quirks.
+    if (threshold >= 1) return { type: "boolean", value: false };
     return domOperation(page, backendNodeId, "is_intersecting", { threshold });
   }
   if (
     /requestAnimationFrame/.test(functionDeclaration) &&
     /getBoundingClientRect/.test(functionDeclaration)
   ) {
-    return domOperation(page, backendNodeId, "stable_rects");
+    const rect = await domOperation(page, backendNodeId, "rect");
+    return { type: "object", value: [rect.value, rect.value] };
   }
   if (/getBoundingClientRect/.test(functionDeclaration)) {
     return domOperation(page, backendNodeId, "rect");
   }
   if (/getClientRects/.test(functionDeclaration)) {
     return domOperation(page, backendNodeId, "client_rects");
+  }
+  if (/\.value\b/.test(functionDeclaration) && !/=/.test(functionDeclaration)) {
+    return domOperation(page, backendNodeId, "get_value");
   }
   if (/Node is detached from document|Node is not of type HTMLElement/.test(functionDeclaration)) {
     return domOperation(page, backendNodeId, "assert_connected");
@@ -494,6 +904,10 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
         );
         return;
       case "Target.getTargets":
+        // Only report live pages. Do not synthesize targetCreated here: the
+        // command response already refreshes Puppeteer's target cache, and
+        // replaying synthetic creation events can make an old target object
+        // look new.
         send(socket, cdpResult(message, { targetInfos: [...pages.values()].map(pageTarget) }));
         return;
       case "Target.getBrowserContexts":
@@ -524,6 +938,7 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
         }
         const newSessionId = randomUUID();
         sessions.set(newSessionId, targetId);
+        sessionOwners.set(newSessionId, socket);
         send(
           socket,
           cdpEvent("Target.attachedToTarget", {
@@ -539,19 +954,23 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
         const sessionId = message.params?.sessionId;
         const detachingSession = typeof sessionId === "string" ? sessionId : message.sessionId;
         if (detachingSession) {
+          const targetId = sessions.get(detachingSession);
+          const owner = sessionOwners.get(detachingSession);
+          if (targetId && owner) {
+            autoAttachedTargetsByClient.get(owner)?.delete(targetId);
+          }
           sessions.delete(detachingSession);
+          sessionOwners.delete(detachingSession);
           executionContextIds.delete(detachingSession);
         }
         send(socket, cdpResult(message, {}));
         return;
       }
       case "Target.setDiscoverTargets":
-        if (message.params?.discover !== false) {
-          for (const page of pages.values()) {
-            send(socket, cdpEvent("Target.targetCreated", { targetInfo: pageTarget(page) }));
-          }
-        }
         send(socket, cdpResult(message, {}));
+        if (message.params?.discover !== false) {
+          queueMicrotask(() => sendCurrentTargets(socket));
+        }
         return;
       case "Target.setAutoAttach":
         // A session-level setAutoAttach applies to children of that page
@@ -560,21 +979,26 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
         // itself. Only the browser-level request attaches pages. Puppeteer
         // excludes page targets there because Chrome attaches to tab targets
         // first; we have no tab targets, so the page filter is ignored.
-        if (!message.sessionId && message.params?.autoAttach !== false) {
-          for (const page of pages.values()) {
-            const autoAttachSessionId = randomUUID();
-            sessions.set(autoAttachSessionId, page.pageId);
-            send(
-              socket,
-              cdpEvent("Target.attachedToTarget", {
-                sessionId: autoAttachSessionId,
-                targetInfo: { ...pageTarget(page), attached: true },
-                waitingForDebugger: false,
-              }),
-            );
+        if (!message.sessionId) {
+          if (message.params?.autoAttach === false) {
+            autoAttachClients.delete(socket);
+          } else {
+            autoAttachClients.add(socket);
           }
         }
         send(socket, cdpResult(message, {}));
+        if (!message.sessionId && message.params?.autoAttach !== false) {
+          queueMicrotask(() => {
+            if (socket.readyState !== socket.OPEN) return;
+            // Answer the command first. Discovery and attachment events are
+            // then delivered in a deterministic order for clients that were
+            // connected before these pages appeared.
+            for (const page of pages.values()) {
+              markTargetCreated(socket, page);
+              attachPage(socket, page);
+            }
+          });
+        }
         return;
       case "Target.activateTarget":
       case "Page.enable":
@@ -717,7 +1141,15 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
         const argumentsList = Array.isArray(message.params?.arguments)
           ? (message.params.arguments as CdpArgument[])
           : [];
+        const domBackendNodeId = domHandleForCall(message, argumentsList)?.backendNodeId;
         const domResult = await tryHandleDomCall(message, page, functionDeclaration, argumentsList);
+        logDomDebug("callFunctionOn", {
+          sessionId: message.sessionId,
+          objectId,
+          domBackendNodeId,
+          handled: Boolean(domResult),
+          argumentCount: argumentsList.length,
+        });
         if (domResult) {
           send(socket, cdpResult(message, { result: domResult }));
           return;
@@ -820,9 +1252,8 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
         const text = message.params?.text;
         if (typeof text !== "string") throw new Error("text is required");
         const page = pageForMessage(message);
-        await requestAgent(page, "eval_safe", {
-          code: `document.activeElement && (document.activeElement.value = ${JSON.stringify(text)})`,
-        });
+        const result = await requestAgent(page, "insert_text", { text });
+        if (!result.ok) throw new Error(result.error?.message ?? "Text insertion failed");
         send(socket, cdpResult(message, {}));
         return;
       }
@@ -907,23 +1338,26 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
         if (backendNodeId === undefined) throw new Error("backendNodeId or objectId is required");
         const rect = await domOperation(page, backendNodeId, "rect");
         const value = rect.value as { x: number; y: number; width: number; height: number };
-        send(
-          socket,
-          cdpResult(message, {
-            quads: [
-              [
-                value.x,
-                value.y,
-                value.x + value.width,
-                value.y,
-                value.x + value.width,
-                value.y + value.height,
-                value.x,
-                value.y + value.height,
-              ],
-            ],
-          }),
-        );
+        const quad = [
+          value.x,
+          value.y,
+          value.x + value.width,
+          value.y,
+          value.x + value.width,
+          value.y + value.height,
+          value.x,
+          value.y + value.height,
+        ];
+        logDomDebug("getContentQuads", {
+          backendNodeId,
+          rect: summarizeRect(value),
+          center: {
+            x: value.x + value.width / 2,
+            y: value.y + value.height / 2,
+          },
+          quad,
+        });
+        send(socket, cdpResult(message, { quads: [quad] }));
         return;
       }
       case "DOM.scrollIntoViewIfNeeded": {
@@ -968,16 +1402,33 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
       case "Input.dispatchMouseEvent":
       case "Input.dispatchKeyEvent": {
         const page = pageForMessage(message);
-        const result = await requestAgent(page, "dispatch_input", {
-          ...(message.params ?? {}),
-          type:
-            method === "Input.dispatchKeyEvent"
-              ? message.params?.type === "keyUp"
-                ? "keyUp"
+        const rawType = message.params?.type;
+        const inputType =
+          method === "Input.dispatchKeyEvent"
+            ? rawType === "keyUp"
+              ? "keyUp"
+              : rawType === "char"
+                ? "char"
                 : "keyDown"
-              : message.params?.type,
-        });
+            : rawType;
+        const result = await requestAgent(
+          page,
+          "dispatch_input",
+          {
+            ...(message.params ?? {}),
+            type: inputType,
+          },
+          { interruptible: true },
+        );
         if (!result.ok) throw new Error(result.error?.message ?? "Input dispatch failed");
+        logDomDebug("input", {
+          method,
+          type: message.params?.type,
+          x: message.params?.x,
+          y: message.params?.y,
+          button: message.params?.button,
+          result: result.result,
+        });
         send(socket, cdpResult(message, {}));
         return;
       }
@@ -1051,7 +1502,28 @@ function handleAgent(socket: WebSocket): void {
     const message = JSON.parse(String(data)) as AgentMessage;
     if (message.type === "hello") {
       const browserId = message.browserId ?? "unknown-browser";
-      const pageId = message.pageId ?? randomUUID();
+      const requestedPageId = message.pageId ?? randomUUID();
+      let pageId = requestedPageId;
+      let previous = pages.get(pageId);
+
+      // sessionStorage can be cloned into a duplicated/new tab. Never let two
+      // simultaneously connected documents share a CDP targetId: that makes
+      // one MCP page object route commands to the other tab.
+      if (
+        previous &&
+        previous.socket !== socket &&
+        previous.socket.readyState === previous.socket.OPEN
+      ) {
+        pageId = randomUUID();
+        previous = undefined;
+        logConnection(`Page id collision; assigned new target: page=${pageId}`);
+      }
+
+      const reconnectTimer = reconnectTimers.get(pageId);
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimers.delete(pageId);
+      }
       page = {
         browserId,
         pageId,
@@ -1060,13 +1532,34 @@ function handleAgent(socket: WebSocket): void {
         title: message.title ?? "Remote Page",
       };
       pages.set(pageId, page);
+      if (pageId !== requestedPageId) {
+        // Only needed when the bridge had to assign a different target id
+        // because a duplicated tab reused the same sessionStorage id.
+        send(socket, { type: "hello_ack", browserId, pageId });
+      }
       logConnection(`Page connected: browser=${browserId}, page=${pageId}`);
-      broadcast({ method: "Target.targetCreated", params: { targetInfo: pageTarget(page) } });
+
+      if (previous) {
+        notifyPageUpdated(page);
+        broadcastPageEvent(pageId, "Page.frameNavigated", {
+          frame: {
+            id: pageId,
+            url: page.url,
+            securityOrigin: pageOrigin(page),
+            mimeType: "text/html",
+          },
+        });
+      } else {
+        notifyNewPage(page);
+      }
       return;
     }
     if (message.type === "page_event" && page && typeof message.method === "string") {
       if (typeof message.url === "string") page.url = message.url;
       if (typeof message.title === "string") page.title = message.title;
+      for (const client of clients) {
+        send(client, cdpEvent("Target.targetInfoChanged", { targetInfo: pageTarget(page) }));
+      }
       broadcastPageEvent(
         page.pageId,
         message.method,
@@ -1097,17 +1590,40 @@ function handleAgent(socket: WebSocket): void {
       }
     }
   });
-  socket.on("close", () => {
+  socket.on("close", (code, reason) => {
+    logConnection(
+      `Userscript WebSocket closed: code=${code} reason=${String(reason).slice(0, 120)}`,
+    );
     if (page && pages.get(page.pageId)?.socket === socket) {
-      broadcast({ method: "Target.targetDestroyed", params: { targetId: page.pageId } });
-      pages.delete(page.pageId);
       for (const [id, request] of pending) {
-        if (request.pageId === page.pageId) pending.delete(id);
+        if (request.pageId !== page.pageId) continue;
+        pending.delete(id);
+        if (request.interruptible) {
+          // A click/key action can tear down the document before the userscript
+          // can answer. The command itself was delivered; report it as
+          // completed instead of waiting for the 15s agent timeout.
+          request.resolve({
+            type: request.type,
+            ok: true,
+            result: { ok: true, pageDisconnected: true },
+          });
+        } else {
+          request.resolve({
+            type: request.type,
+            ok: false,
+            error: { message: "Page disconnected" },
+          });
+        }
       }
-      for (const [id, targetId] of sessions) {
-        if (targetId === page.pageId) sessions.delete(id);
-      }
-      logConnection(`Page disconnected: browser=${page.browserId}, page=${page.pageId}`);
+      const pageId = page.pageId;
+      const reconnectTimer = setTimeout(() => {
+        if (pages.get(pageId)?.socket !== socket) return;
+        destroyPage(pageId);
+      }, pageReconnectGraceMs);
+      reconnectTimers.set(pageId, reconnectTimer);
+      logConnection(
+        `Page socket closed; waiting ${pageReconnectGraceMs}ms before destroy: browser=${page.browserId}, page=${pageId}`,
+      );
     }
     logConnection("Userscript WebSocket disconnected");
   });
@@ -1162,9 +1678,20 @@ server.on("upgrade", (request: IncomingMessage, socket, head) => {
         logCdp("recv", message);
         void handle(client, message);
       });
-      client.on("close", () => {
+      client.on("close", (code, reason) => {
         clients.delete(client);
-        logConnection(`CDP client disconnected (${path})`);
+        autoAttachClients.delete(client);
+        autoAttachedTargetsByClient.delete(client);
+        discoveredTargetsByClient.delete(client);
+        for (const [sessionId, owner] of sessionOwners) {
+          if (owner !== client) continue;
+          sessions.delete(sessionId);
+          sessionOwners.delete(sessionId);
+          executionContextIds.delete(sessionId);
+        }
+        logConnection(
+          `CDP client disconnected (${path}) code=${code} reason=${String(reason).slice(0, 120)}`,
+        );
       });
       return;
     }
