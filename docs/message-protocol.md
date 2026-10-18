@@ -49,6 +49,7 @@ click
 input
 scroll
 get_console
+get_dom_summary
 eval_safe
 ```
 

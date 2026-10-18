@@ -61,6 +61,21 @@ Playwright 官方文档推荐使用 Playwright 自带的 Chromium 加载未打�
 --load-extension
 ```
 
+## CDP 兼容层注意事项
+
+`cdp-bridge` 不是完整浏览器，只需要覆盖 `chrome-devtools-mcp` / Puppeteer 实际依赖的协议子集：
+
+- 扁平化会话中的事件必须带顶层 `sessionId`，例如 `Runtime.executionContextCreated`。否则 Puppeteer 会把事件交给浏览器连接而不是页面会话，`evaluate_script` 会一直等待执行上下文并超时。
+- 浏览器级 `Target.setAutoAttach` 可以为每个页面创建会话；会话级 `Target.setAutoAttach` 不应再次附加当前页面，否则会递归产生 `Target.attachedToTarget`。
+- `Target.getDevToolsTarget` 的正确返回是可选 `targetId`。没有 DevTools 页面时返回 `{}`，Puppeteer 会按“没有 DevTools”处理。
+- `Runtime.evaluate` 返回函数时，需要提供 `objectId` 供后续 `Runtime.callFunctionOn` 使用；`Runtime.callFunctionOn` 本身始终表示执行函数，不能用来“创建函数句柄”。
+- `Page.getFrameTree` / `Page.getResourceTree` 的 `frame.id` 必须与 `Runtime.executionContextCreated` 的 `auxData.frameId` 一致，`Page.createIsolatedWorld` 也应返回对应的 `executionContextId` 并发送上下文事件。
+- 油猴脚本没有真实 DOM agent，`backendNodeId` 由页面端生成。应使用 `WeakMap<Element, number>` 保存稳定映射，并在 `Accessibility.getFullAXTree` 时登记，不能每次按 DOM 顺序重新计算。
+- Puppeteer 会把 DOM 元素作为 `Runtime.callFunctionOn` 的 `arguments` 传入，而不是放在顶层 `objectId`。点击链路依赖 `DOM.describeNode({objectId})`、`DOM.resolveNode`、`DOM.getContentQuads` 以及固定操作 `dom_operation`（rect / client_rects / is_intersecting / scroll_into_view / click）。
+- `Runtime.callFunctionOn` 返回新的 DOM handle 时不能复用传入的 `objectId`；Puppeteer 会释放临时 handle，复用会导致返回的 ElementHandle 立即失效。
+
+需要观察协议往返时，可在启动桥接服务时设置 `CDP_DEBUG=1`。该日志只记录方法名、会话 ID 和错误 ID，不记录页面内容。
+
 ## 验收标准
 
 - 页面跳转后连接可以恢复。
