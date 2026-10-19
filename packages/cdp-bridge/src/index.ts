@@ -826,17 +826,13 @@ async function tryHandleDomCall(
       argumentValues.find((value) => typeof value === "number") ??
       numberParam(message.params?.threshold) ??
       0;
-    // threshold 1 is used by scrollIntoViewIfNeeded. Force the scroll path
-    // directly instead of relying on browser-side intersection quirks.
-    if (threshold >= 1) return { type: "boolean", value: false };
     return domOperation(page, backendNodeId, "is_intersecting", { threshold });
   }
   if (
     /requestAnimationFrame/.test(functionDeclaration) &&
     /getBoundingClientRect/.test(functionDeclaration)
   ) {
-    const rect = await domOperation(page, backendNodeId, "rect");
-    return { type: "object", value: [rect.value, rect.value] };
+    return domOperation(page, backendNodeId, "stable_rects");
   }
   if (/getBoundingClientRect/.test(functionDeclaration)) {
     return domOperation(page, backendNodeId, "rect");
