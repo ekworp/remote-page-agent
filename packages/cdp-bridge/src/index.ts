@@ -31,6 +31,21 @@ const publicOrigin = (
 const backendBrowserId = randomUUID();
 const remoteAgentToken = process.env.REMOTE_AGENT_TOKEN ?? dotEnv.REMOTE_AGENT_TOKEN ?? "";
 
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const connectionAttemptWindowMs = positiveNumber(
+  process.env.REMOTE_AGENT_CONNECTION_WINDOW_MS ?? dotEnv.REMOTE_AGENT_CONNECTION_WINDOW_MS,
+  60_000,
+);
+const maxConnectionAttempts = positiveNumber(
+  process.env.REMOTE_AGENT_MAX_CONNECTION_ATTEMPTS ?? dotEnv.REMOTE_AGENT_MAX_CONNECTION_ATTEMPTS,
+  30,
+);
+const connectionAttempts = new Map<string, number[]>();
+
 type AgentMessage = {
   id?: string;
   type: string;
@@ -93,6 +108,25 @@ const reconnectTimers = new Map<string, NodeJS.Timeout>();
 
 function publicUrl(path: string): string {
   return `${publicOrigin}${path}`;
+}
+
+function clientAddress(request: IncomingMessage): string {
+  return request.socket.remoteAddress ?? "unknown";
+}
+
+function allowAgentConnection(request: IncomingMessage): boolean {
+  const now = Date.now();
+  const address = clientAddress(request);
+  const recent = (connectionAttempts.get(address) ?? []).filter(
+    (timestamp) => now - timestamp < connectionAttemptWindowMs,
+  );
+  if (recent.length >= maxConnectionAttempts) {
+    connectionAttempts.set(address, recent);
+    return false;
+  }
+  recent.push(now);
+  connectionAttempts.set(address, recent);
+  return true;
 }
 
 function broadcast(value: unknown): void {
@@ -1554,11 +1588,7 @@ function handleAgent(socket: WebSocket): void {
         title: message.title ?? "Remote Page",
       };
       pages.set(pageId, page);
-      if (pageId !== requestedPageId) {
-        // Only needed when the bridge had to assign a different target id
-        // because a duplicated tab reused the same sessionStorage id.
-        send(socket, { type: "hello_ack", browserId, pageId });
-      }
+      send(socket, { type: "hello_ack", ok: true, browserId, pageId });
       logConnection(`Page connected: browser=${browserId}, page=${pageId}`);
 
       if (previous) {
@@ -1685,6 +1715,12 @@ const server = createServer((request, response) => {
 const websocket = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request: IncomingMessage, socket, head) => {
   const path = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
+  if (path === "/agent" && !allowAgentConnection(request)) {
+    socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    logConnection(`Rejected agent connection rate limit: address=${clientAddress(request)}`);
+    return;
+  }
   websocket.handleUpgrade(request, socket, head, (client) => {
     if (path === "/agent") {
       handleAgent(client);

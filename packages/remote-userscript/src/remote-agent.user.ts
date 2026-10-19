@@ -96,6 +96,9 @@ function elementByBackendNodeId(backendNodeId: number): Element | undefined {
 }
 
 let socket: WebSocket | undefined;
+let reconnectAttempt = 0;
+let reconnectTimer: number | undefined;
+let autoReconnectDisabled = false;
 let notice: HTMLDivElement | undefined;
 let statusIcon: SVGSVGElement | undefined;
 let operationText: HTMLDivElement | undefined;
@@ -380,6 +383,9 @@ function configureBridge(): void {
     GM_setValue(bridgeStorageKey, url);
     GM_setValue(bridgeTokenStorageKey, tokenInput.value.trim());
     close();
+    autoReconnectDisabled = false;
+    reconnectAttempt = 0;
+    if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
     socket?.close();
     socket = undefined;
     showNotice("Bridge configuration saved; connecting", "info");
@@ -1475,7 +1481,8 @@ async function execute(request: AgentRequest): Promise<void> {
 
 function connect(): void {
   const bridgeUrl = getBridgeUrl();
-  if (!bridgeUrl) return;
+  if (!bridgeUrl || autoReconnectDisabled) return;
+  if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return;
   showNotice("Connecting to Remote Page Agent", "info");
   const currentSocket = new WebSocket(bridgeUrl);
   socket = currentSocket;
@@ -1494,9 +1501,14 @@ function connect(): void {
     try {
       const message = JSON.parse(String(event.data)) as AgentRequest & { pageId?: string };
       if (message.type === "hello_ack" && message.ok === false) {
+        autoReconnectDisabled = true;
         showNotice("Remote Page Agent authentication failed", "error");
         currentSocket.close(1008, "Authentication failed");
         return;
+      }
+      if (message.type === "hello_ack" && message.ok === true) {
+        reconnectAttempt = 0;
+        showNotice("Remote Page Agent connected", "success");
       }
       if (message.type === "hello_ack" && typeof message.pageId === "string") {
         pageId = message.pageId;
@@ -1514,7 +1526,19 @@ function connect(): void {
   });
   currentSocket.addEventListener("close", () => {
     if (socket === currentSocket) showNotice("Remote Page Agent disconnected", "error");
-    if (socket === currentSocket && getBridgeUrl()) window.setTimeout(connect, 3000);
+    if (socket !== currentSocket || !getBridgeUrl() || autoReconnectDisabled) return;
+    reconnectAttempt += 1;
+    if (reconnectAttempt > 6) {
+      autoReconnectDisabled = true;
+      showNotice("Remote Page Agent disconnected; automatic reconnect stopped", "error");
+      return;
+    }
+    const delay = reconnectAttempt <= 3 ? 5000 : 10000;
+    showNotice(`Reconnect attempt ${reconnectAttempt}/6 in ${delay / 1000}s`, "info");
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = undefined;
+      connect();
+    }, delay);
   });
   currentSocket.addEventListener("error", () => {
     if (socket === currentSocket) showNotice("Remote Page Agent connection error", "error");
