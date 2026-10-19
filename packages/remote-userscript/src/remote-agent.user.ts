@@ -64,6 +64,12 @@ type Language = "zh" | "en";
 
 const translations: Record<string, Record<Language, string>> = {
   configure: { zh: "连接设置", en: "Connection settings" },
+  addCurrentOrigin: { zh: "将当前页面加入白名单", en: "Add current origin to whitelist" },
+  originAdded: { zh: "已将 {{origin}} 加入白名单", en: "Added {{origin}} to the whitelist" },
+  originAlreadyAdded: {
+    zh: "{{origin}} 已在白名单中",
+    en: "{{origin}} is already in the whitelist",
+  },
   opacity: { zh: "透明度", en: "Opacity" },
   settingsTitle: { zh: "Remote Page Agent 连接设置", en: "Remote Page Agent connection settings" },
   serverAddress: { zh: "服务器地址", en: "Server address" },
@@ -267,6 +273,16 @@ function showNotice(message: string, kind: NoticeKind = "info"): void {
       configureBridge();
     });
     menu.append(settingsButton);
+    const whitelistButton = document.createElement("button");
+    whitelistButton.type = "button";
+    whitelistButton.textContent = translate("addCurrentOrigin");
+    whitelistButton.style.cssText = settingsButton.style.cssText;
+    whitelistButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      addCurrentOriginToWhitelist();
+    });
+    menu.append(whitelistButton);
     element.append(menu);
     element.setAttribute("data-remote-page-agent", "notice");
     element.style.cssText = [
@@ -366,13 +382,25 @@ type TemporaryGrant = {
 };
 
 function whitelistEnabled(): boolean {
-  return GM_getValue<boolean>(whitelistEnabledStorageKey, false);
+  return GM_getValue<boolean>(whitelistEnabledStorageKey, true);
 }
 
 function whitelistOrigins(): string[] {
   return GM_getValue<string[]>(whitelistOriginsStorageKey, []).filter(
     (origin): origin is string => typeof origin === "string" && origin.length > 0,
   );
+}
+
+function addCurrentOriginToWhitelist(): void {
+  const origin = normalizeOrigin(location.origin);
+  if (!origin) return;
+  const origins = whitelistOrigins();
+  if (origins.includes(origin)) {
+    showNotice(translate("originAlreadyAdded", { origin }), "info");
+    return;
+  }
+  GM_setValue(whitelistOriginsStorageKey, [...origins, origin]);
+  showNotice(translate("originAdded", { origin }), "success");
 }
 
 function normalizeOrigin(value: string): string | undefined {
