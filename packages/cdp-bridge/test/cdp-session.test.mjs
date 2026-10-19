@@ -28,6 +28,18 @@ async function waitForBridge(port) {
   throw new Error("CDP bridge did not start");
 }
 
+async function startBridge(t, extraEnv = {}) {
+  const port = await freePort();
+  const bridge = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname], {
+    cwd: new URL("..", import.meta.url).pathname,
+    env: { ...process.env, ...extraEnv, PORT: String(port) },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  t.after(() => bridge.kill("SIGTERM"));
+  const version = await waitForBridge(port);
+  return { port, version };
+}
+
 function waitForOpen(socket) {
   return new Promise((resolve, reject) => {
     socket.once("open", resolve);
@@ -36,15 +48,7 @@ function waitForOpen(socket) {
 }
 
 test("CDP sessions receive execution contexts and evaluate functions", async (t) => {
-  const port = await freePort();
-  const bridge = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname], {
-    cwd: new URL("..", import.meta.url).pathname,
-    env: { ...process.env, PORT: String(port) },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
-  t.after(() => bridge.kill("SIGTERM"));
-
-  const version = await waitForBridge(port);
+  const { port, version } = await startBridge(t);
 
   const agent = new WebSocket(`ws://127.0.0.1:${port}/agent`);
   t.after(() => agent.close());
@@ -176,15 +180,7 @@ test("CDP sessions receive execution contexts and evaluate functions", async (t)
 });
 
 test("AX uid resolves to a DOM handle and click dispatches mouse events", async (t) => {
-  const port = await freePort();
-  const bridge = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname], {
-    cwd: new URL("..", import.meta.url).pathname,
-    env: { ...process.env, PORT: String(port) },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
-  t.after(() => bridge.kill("SIGTERM"));
-
-  const version = await waitForBridge(port);
+  const { port, version } = await startBridge(t);
   const agent = new WebSocket(`ws://127.0.0.1:${port}/agent`);
   t.after(() => agent.close());
   const clicks = [];
@@ -479,15 +475,7 @@ test("AX uid resolves to a DOM handle and click dispatches mouse events", async 
 });
 
 test("Puppeteer fill call shapes use fixed DOM input operations", async (t) => {
-  const port = await freePort();
-  const bridge = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname], {
-    cwd: new URL("..", import.meta.url).pathname,
-    env: { ...process.env, PORT: String(port) },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
-  t.after(() => bridge.kill("SIGTERM"));
-
-  const version = await waitForBridge(port);
+  const { port, version } = await startBridge(t);
   const agent = new WebSocket(`ws://127.0.0.1:${port}/agent`);
   t.after(() => agent.close());
   const operations = [];
@@ -722,15 +710,7 @@ test("Puppeteer fill call shapes use fixed DOM input operations", async (t) => {
 });
 
 test("page targets stay unique across connect, reconnect, navigation and close", async (t) => {
-  const port = await freePort();
-  const bridge = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname], {
-    cwd: new URL("..", import.meta.url).pathname,
-    env: { ...process.env, PORT: String(port), PAGE_RECONNECT_GRACE_MS: "300" },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
-  t.after(() => bridge.kill("SIGTERM"));
-
-  const version = await waitForBridge(port);
+  const { port, version } = await startBridge(t, { PAGE_RECONNECT_GRACE_MS: "300" });
   const events = [];
   const responses = new Map();
   let requestId = 0;
@@ -951,15 +931,7 @@ test("page targets stay unique across connect, reconnect, navigation and close",
 });
 
 test("a click that destroys its page resolves before the page socket timeout", async (t) => {
-  const port = await freePort();
-  const bridge = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname], {
-    cwd: new URL("..", import.meta.url).pathname,
-    env: { ...process.env, PORT: String(port), PAGE_RECONNECT_GRACE_MS: "300" },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
-  t.after(() => bridge.kill("SIGTERM"));
-
-  const version = await waitForBridge(port);
+  const { port, version } = await startBridge(t, { PAGE_RECONNECT_GRACE_MS: "300" });
   const events = [];
   const responses = new Map();
   let requestId = 0;

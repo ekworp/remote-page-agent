@@ -544,6 +544,7 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
   pruneBackendNodeMap();
   const maxNodes = 3000;
   const nodes: AccessibilityNode[] = [];
+  const nodesById = new Map<string, AccessibilityNode>();
   const visit = (element: Element, level: number): string[] => {
     if (isHiddenFromAccessibilityTree(element) || nodes.length >= maxNodes) return [];
     const backendNodeId = backendNodeIdFor(element);
@@ -561,10 +562,7 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
     // retaining descendants, especially links and form controls.
     if (isTransparentAccessibilityNode(role, name)) return children;
     if (role === "generic" || role === "none") {
-      const onlyChild =
-        children.length === 1
-          ? nodes.find((candidate) => candidate.nodeId === children[0])
-          : undefined;
+      const onlyChild = children.length === 1 ? nodesById.get(children[0]) : undefined;
       if (onlyChild?.name?.value === name) return children;
     }
 
@@ -579,6 +577,7 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
     };
     if (name) node.name = { type: "computedString", value: name };
     nodes.push(node);
+    nodesById.set(nodeId, node);
     return [nodeId];
   };
   const root: AccessibilityNode = {
@@ -780,6 +779,24 @@ function immediateScrollIntoView(element: Element): void {
   for (const { element: scrollable, previous } of changed) {
     scrollable.style.scrollBehavior = previous;
   }
+}
+
+function scheduleElementClick(element: Element, eventInit: MouseEventInit = {}): void {
+  window.setTimeout(() => {
+    if (!element.isConnected) return;
+    if (element instanceof HTMLElement) {
+      element.click();
+      return;
+    }
+    element.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        ...eventInit,
+        buttons: 0,
+      }),
+    );
+  }, 0);
 }
 
 function createValueEvent(type: "beforeinput" | "input", data: string, inputType: string): Event {
@@ -1013,14 +1030,7 @@ function domOperation(
   switch (operation) {
     case "click": {
       const anchor = clickTarget.closest("a[href]");
-      window.setTimeout(() => {
-        if (!clickTarget.isConnected) return;
-        if (clickTarget instanceof HTMLElement) {
-          clickTarget.click();
-        } else {
-          clickTarget.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-        }
-      }, 0);
+      scheduleElementClick(clickTarget);
       return {
         clicked: true,
         scheduledClick: true,
@@ -1252,20 +1262,10 @@ function dispatchInput(payload: Record<string, unknown>): Record<string, unknown
     // target="_blank" popup can destroy this document immediately; doing
     // click() synchronously would race the WebSocket response and leave the
     // MCP tool waiting for a dead page.
-    window.setTimeout(() => {
-      if (!clickTarget.isConnected) return;
-      if (clickTarget instanceof HTMLElement) {
-        clickTarget.click();
-      } else {
-        clickTarget.dispatchEvent(
-          new MouseEvent("click", {
-            ...mouseInit,
-            buttons: 0,
-            detail: Number(payload.clickCount ?? 1),
-          }),
-        );
-      }
-    }, 0);
+    scheduleElementClick(clickTarget, {
+      ...mouseInit,
+      detail: Number(payload.clickCount ?? 1),
+    });
     return { ...result, scheduledClick: true, navigationHint };
   }
   if (type === "mouseWheel") {
@@ -1376,14 +1376,7 @@ async function execute(request: AgentRequest): Promise<void> {
       const element = elementByBackendNodeId(backendNodeId);
       if (!element) throw new Error("DOM node not found");
       const target = resolveClickTarget(element);
-      window.setTimeout(() => {
-        if (!target.isConnected) return;
-        if (target instanceof HTMLElement) {
-          target.click();
-        } else {
-          target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-        }
-      }, 0);
+      scheduleElementClick(target);
       response(request.id, {
         clicked: true,
         scheduledClick: true,
