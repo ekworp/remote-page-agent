@@ -3,7 +3,7 @@
 // @namespace    remote-page-agent
 // @version      __PACKAGE_VERSION__
 // @description  Connect a page to the remote-page-agent CDP bridge.
-// @icon         https://raw.githubusercontent.com/ekworp/remote-page-agent/main/assets/remote-page-agent.svg
+// @icon         https://cdn.jsdelivr.net/gh/ekworp/remote-page-agent@main/assets/remote-page-agent.svg
 // @match        *://*/*
 // @run-at       document-start
 // @grant        GM_registerMenuCommand
@@ -51,6 +51,7 @@ type DomSummary = {
 
 const bridgeStorageKey = "remote-page-agent-bridge-url";
 const bridgeTokenStorageKey = "remote-page-agent-bridge-token";
+const languageStorageKey = "remote-page-agent-language";
 const whitelistEnabledStorageKey = "remote-page-agent-whitelist-enabled";
 const whitelistOriginsStorageKey = "remote-page-agent-whitelist-origins";
 const temporaryGrantStorageKey = "remote-page-agent-temporary-grants";
@@ -58,6 +59,73 @@ const defaultBridgeUrl = "ws://localhost:9222/agent";
 const temporaryGrantTtlMs = 60_000;
 const temporaryGrantIdleTtlMs = 5 * 60_000;
 const temporaryGrantMaxLifetimeMs = 30 * 60_000;
+
+type Language = "zh" | "en";
+
+const translations: Record<string, Record<Language, string>> = {
+  configure: { zh: "连接设置", en: "Connection settings" },
+  opacity: { zh: "透明度", en: "Opacity" },
+  settingsTitle: { zh: "Remote Page Agent 连接设置", en: "Remote Page Agent connection settings" },
+  serverAddress: { zh: "服务器地址", en: "Server address" },
+  connectionPassword: { zh: "连接密码", en: "Connection password" },
+  language: { zh: "语言", en: "Language" },
+  chinese: { zh: "中文", en: "Chinese" },
+  english: { zh: "英文", en: "English" },
+  whitelistEnabled: { zh: "仅自动连接白名单页面", en: "Auto-connect whitelist pages only" },
+  whitelistOrigins: {
+    zh: "白名单 origin（每行一个，例如 https://example.com）",
+    en: "Allowed origins (one per line, e.g. https://example.com)",
+  },
+  cancel: { zh: "取消", en: "Cancel" },
+  saveAndConnect: { zh: "保存并连接", en: "Save and connect" },
+  invalidBridgeUrl: {
+    zh: "服务器地址必须以 ws:// 或 wss:// 开头",
+    en: "The server address must start with ws:// or wss://",
+  },
+  invalidOrigin: {
+    zh: "白名单必须是 http:// 或 https:// origin，每行一个",
+    en: "Allowed origins must be http:// or https:// origins, one per line",
+  },
+  configurationSaved: {
+    zh: "连接设置已保存，正在连接",
+    en: "Connection settings saved; connecting",
+  },
+  commandFailed: { zh: "命令失败：{{message}}", en: "Command failed: {{message}}" },
+  notWhitelisted: {
+    zh: "当前页面不在自动连接白名单中",
+    en: "This page is not in the auto-connect whitelist",
+  },
+  connecting: { zh: "正在连接 Remote Page Agent", en: "Connecting to Remote Page Agent" },
+  connected: { zh: "Remote Page Agent 已连接", en: "Remote Page Agent connected" },
+  authenticationFailed: {
+    zh: "Remote Page Agent 认证失败",
+    en: "Remote Page Agent authentication failed",
+  },
+  disconnected: { zh: "Remote Page Agent 已断开", en: "Remote Page Agent disconnected" },
+  reconnectStopped: {
+    zh: "Remote Page Agent 已断开，自动重连已停止",
+    en: "Remote Page Agent disconnected; automatic reconnect stopped",
+  },
+  reconnectAttempt: {
+    zh: "将在 {{seconds}} 秒后重连（第 {{attempt}}/6 次）",
+    en: "Reconnect attempt {{attempt}}/6 in {{seconds}}s",
+  },
+  connectionError: { zh: "Remote Page Agent 连接错误", en: "Remote Page Agent connection error" },
+};
+
+function getLanguage(): Language {
+  const stored = GM_getValue<string>(languageStorageKey, "");
+  if (stored === "zh" || stored === "en") return stored;
+  return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+function translate(key: string, values: Record<string, string | number> = {}): string {
+  let message = translations[key]?.[getLanguage()] ?? key;
+  for (const [name, value] of Object.entries(values)) {
+    message = message.split(`{{${name}}}`).join(String(value));
+  }
+  return message;
+}
 const browserIdStorageKey = "remote-page-agent-browser-id";
 const pageIdStorageKey = "remote-page-agent-page-id";
 const browserId = GM_getValue<string>(browserIdStorageKey, "") || crypto.randomUUID();
@@ -160,7 +228,7 @@ function showNotice(message: string, kind: NoticeKind = "info"): void {
     menu.append(operationText);
     const label = document.createElement("label");
     label.style.cssText = "display: block; margin-top: 10px;";
-    label.textContent = "透明度 ";
+    label.textContent = `${translate("opacity")} `;
     const opacity = document.createElement("input");
     opacity.type = "range";
     opacity.min = "0.2";
@@ -178,7 +246,7 @@ function showNotice(message: string, kind: NoticeKind = "info"): void {
     menu.append(label);
     const settingsButton = document.createElement("button");
     settingsButton.type = "button";
-    settingsButton.textContent = "连接设置";
+    settingsButton.textContent = translate("configure");
     settingsButton.style.cssText = [
       "display: block",
       "width: 100%",
@@ -432,7 +500,7 @@ function configureBridge(): void {
 
   const title = document.createElement("h2");
   title.id = "remote-page-agent-config-title";
-  title.textContent = "Remote Page Agent 连接设置";
+  title.textContent = translate("settingsTitle");
   title.style.cssText = "margin: 0 0 16px; font-size: 18px;";
   panel.append(title);
 
@@ -459,8 +527,35 @@ function configureBridge(): void {
     return input;
   };
 
-  const urlInput = field("服务器地址", "url", getBridgeUrl());
-  const tokenInput = field("连接密码", "password", getBridgeToken());
+  const urlInput = field(translate("serverAddress"), "url", getBridgeUrl());
+  const tokenInput = field(translate("connectionPassword"), "password", getBridgeToken());
+
+  const languageLabel = document.createElement("label");
+  languageLabel.style.cssText = "display: block; margin-top: 12px; font-weight: 600;";
+  languageLabel.textContent = translate("language");
+  const languageSelect = document.createElement("select");
+  languageSelect.style.cssText = [
+    "display: block",
+    "box-sizing: border-box",
+    "width: 100%",
+    "margin-top: 6px",
+    "padding: 8px 10px",
+    "border: 1px solid #d1d5db",
+    "border-radius: 6px",
+    "font: inherit",
+  ].join(";");
+  for (const [value, label] of [
+    ["zh", translate("chinese")],
+    ["en", translate("english")],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    languageSelect.append(option);
+  }
+  languageSelect.value = getLanguage();
+  languageLabel.append(languageSelect);
+  panel.append(languageLabel);
 
   const whitelistLabel = document.createElement("label");
   whitelistLabel.style.cssText = "display: flex; gap: 8px; align-items: center; margin-top: 16px;";
@@ -468,13 +563,13 @@ function configureBridge(): void {
   whitelistInput.type = "checkbox";
   whitelistInput.checked = whitelistEnabled();
   const whitelistText = document.createElement("span");
-  whitelistText.textContent = "仅自动连接白名单页面";
+  whitelistText.textContent = translate("whitelistEnabled");
   whitelistLabel.append(whitelistInput, whitelistText);
   panel.append(whitelistLabel);
 
   const originsLabel = document.createElement("label");
   originsLabel.style.cssText = "display: block; margin-top: 10px; font-weight: 600;";
-  originsLabel.textContent = "白名单 origin（每行一个，例如 https://example.com）";
+  originsLabel.textContent = translate("whitelistOrigins");
   const originsInput = document.createElement("textarea");
   originsInput.value = whitelistOrigins().join("\n");
   originsInput.rows = 4;
@@ -497,10 +592,10 @@ function configureBridge(): void {
   actions.style.cssText = "display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;";
   const cancel = document.createElement("button");
   cancel.type = "button";
-  cancel.textContent = "取消";
+  cancel.textContent = translate("cancel");
   const save = document.createElement("button");
   save.type = "submit";
-  save.textContent = "保存并连接";
+  save.textContent = translate("saveAndConnect");
   for (const button of [cancel, save]) {
     button.style.cssText =
       "padding: 8px 12px; border: 0; border-radius: 6px; cursor: pointer; font: inherit;";
@@ -524,7 +619,7 @@ function configureBridge(): void {
     event.preventDefault();
     const url = urlInput.value.trim();
     if (!/^wss?:\/\//.test(url)) {
-      urlInput.setCustomValidity("服务器地址必须以 ws:// 或 wss:// 开头");
+      urlInput.setCustomValidity(translate("invalidBridgeUrl"));
       urlInput.reportValidity();
       return;
     }
@@ -535,13 +630,14 @@ function configureBridge(): void {
       .filter(Boolean);
     const origins = originLines.map(normalizeOrigin);
     if (origins.some((origin) => !origin)) {
-      originsInput.setCustomValidity("白名单必须是 http:// 或 https:// origin，每行一个");
+      originsInput.setCustomValidity(translate("invalidOrigin"));
       originsInput.reportValidity();
       return;
     }
     originsInput.setCustomValidity("");
     GM_setValue(bridgeStorageKey, url);
     GM_setValue(bridgeTokenStorageKey, tokenInput.value.trim());
+    GM_setValue(languageStorageKey, languageSelect.value === "en" ? "en" : "zh");
     GM_setValue(whitelistEnabledStorageKey, whitelistInput.checked);
     GM_setValue(whitelistOriginsStorageKey, [...new Set(origins.filter(Boolean))]);
     close();
@@ -550,14 +646,14 @@ function configureBridge(): void {
     if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
     socket?.close();
     socket = undefined;
-    showNotice("Bridge configuration saved; connecting", "info");
+    showNotice(translate("configurationSaved"), "info");
     connect();
   });
   document.body?.append(overlay);
   urlInput.focus();
 }
 
-GM_registerMenuCommand("Configure Remote Page Agent", configureBridge);
+GM_registerMenuCommand(translate("configure"), configureBridge);
 
 function send(message: unknown): void {
   if (socket?.readyState === WebSocket.OPEN) {
@@ -576,7 +672,7 @@ function response(id: string, result: unknown, meta?: Record<string, unknown>): 
 
 function failure(id: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
-  showNotice(`Command failed: ${message}`, "error");
+  showNotice(translate("commandFailed", { message }), "error");
   send({
     id,
     ok: false,
@@ -1654,16 +1750,16 @@ function connect(): void {
   const bridgeUrl = getBridgeUrl();
   if (!bridgeUrl || autoReconnectDisabled || !pageHasWhitelistAccess()) {
     if (whitelistEnabled() && !pageHasWhitelistAccess()) {
-      showNotice("当前页面不在自动连接白名单中", "info");
+      showNotice(translate("notWhitelisted"), "info");
     }
     return;
   }
   if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return;
-  showNotice("Connecting to Remote Page Agent", "info");
+  showNotice(translate("connecting"), "info");
   const currentSocket = new WebSocket(bridgeUrl);
   socket = currentSocket;
   currentSocket.addEventListener("open", () => {
-    showNotice("Remote Page Agent connected", "success");
+    showNotice(translate("connected"), "success");
     send({
       type: "hello",
       browserId,
@@ -1678,13 +1774,13 @@ function connect(): void {
       const message = JSON.parse(String(event.data)) as AgentRequest & { pageId?: string };
       if (message.type === "hello_ack" && message.ok === false) {
         autoReconnectDisabled = true;
-        showNotice("Remote Page Agent authentication failed", "error");
+        showNotice(translate("authenticationFailed"), "error");
         currentSocket.close(1008, "Authentication failed");
         return;
       }
       if (message.type === "hello_ack" && message.ok === true) {
         reconnectAttempt = 0;
-        showNotice("Remote Page Agent connected", "success");
+        showNotice(translate("connected"), "success");
       }
       if (message.type === "hello_ack" && typeof message.pageId === "string") {
         pageId = message.pageId;
@@ -1701,23 +1797,29 @@ function connect(): void {
     }
   });
   currentSocket.addEventListener("close", () => {
-    if (socket === currentSocket) showNotice("Remote Page Agent disconnected", "error");
+    if (socket === currentSocket) showNotice(translate("disconnected"), "error");
     if (socket !== currentSocket || !getBridgeUrl() || autoReconnectDisabled) return;
     reconnectAttempt += 1;
     if (reconnectAttempt > 6) {
       autoReconnectDisabled = true;
-      showNotice("Remote Page Agent disconnected; automatic reconnect stopped", "error");
+      showNotice(translate("reconnectStopped"), "error");
       return;
     }
     const delay = reconnectAttempt <= 3 ? 5000 : 10000;
-    showNotice(`Reconnect attempt ${reconnectAttempt}/6 in ${delay / 1000}s`, "info");
+    showNotice(
+      translate("reconnectAttempt", {
+        attempt: reconnectAttempt,
+        seconds: delay / 1000,
+      }),
+      "info",
+    );
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = undefined;
       connect();
     }, delay);
   });
   currentSocket.addEventListener("error", () => {
-    if (socket === currentSocket) showNotice("Remote Page Agent connection error", "error");
+    if (socket === currentSocket) showNotice(translate("connectionError"), "error");
   });
 }
 
