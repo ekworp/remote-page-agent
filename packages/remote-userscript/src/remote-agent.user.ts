@@ -748,6 +748,11 @@ function isFunctionExpression(code: string): boolean {
   );
 }
 
+function isBodyTextExpression(code: string): boolean {
+  const normalized = code.replace(/\s+/g, "");
+  return /document\.body\?document\.body\.innerText:['"]NOBODY['"]/.test(normalized);
+}
+
 function selector(payload: Record<string, unknown>): Element {
   const value = payload.selector;
   if (typeof value !== "string" || value.length === 0) {
@@ -778,6 +783,7 @@ function accessibilityRole(element: Element): string {
     return "textbox";
   }
   if (tag === "img") return "image";
+  if (tag === "p") return "paragraph";
   if (tag === "nav") return "navigation";
   if (tag === "main") return "main";
   if (tag === "table") return "table";
@@ -787,6 +793,13 @@ function accessibilityRole(element: Element): string {
   if (tag === "ul" || tag === "ol") return "list";
   if (tag === "li") return "listitem";
   return "generic";
+}
+
+function directTextContent(element: Element): string {
+  return Array.from(element.childNodes)
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent ?? "")
+    .join(" ");
 }
 
 function accessibilityName(element: Element): string {
@@ -814,16 +827,18 @@ function accessibilityName(element: Element): string {
   // that text as their accessible name defeats tree compaction and produces
   // enormous duplicate names. Semantic elements still use rendered text.
   const role = accessibilityRole(element);
+  const directText = normalizeAccessibilityName(directTextContent(element), 2000);
   const renderedText = element instanceof HTMLElement ? element.innerText : "";
   const text = normalizeAccessibilityName(renderedText || element.textContent || "");
   if (role === "generic" || role === "none") {
+    if (directText) return directText;
     return text.length <= 80 ? text : "";
   }
   return text;
 }
 
-function normalizeAccessibilityName(value: string): string {
-  return value.replace(/\s+/g, " ").trim().slice(0, 500);
+function normalizeAccessibilityName(value: string, maxLength = 500): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
 function isHiddenFromAccessibilityTree(element: Element): boolean {
@@ -1778,6 +1793,17 @@ async function execute(request: AgentRequest): Promise<void> {
           resultType: "function",
           functionSource: code,
         });
+        return;
+      }
+      if (isBodyTextExpression(code)) {
+        const bodyText = document.body?.innerText ?? "NO BODY";
+        response(
+          request.id,
+          code.includes("JSON.stringify") ? JSON.stringify(bodyText) : bodyText,
+          {
+            resultType: "string",
+          },
+        );
         return;
       }
       if (code.includes("document.title")) {
