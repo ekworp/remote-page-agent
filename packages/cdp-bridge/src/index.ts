@@ -1,7 +1,26 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { type WebSocket, WebSocketServer } from "ws";
 
+function loadDotEnv(): Record<string, string> {
+  const candidates = [
+    process.env.REMOTE_AGENT_ENV_FILE,
+    `${process.cwd()}/.env`,
+    `${process.cwd()}/packages/cdp-bridge/.env`,
+  ].filter((value): value is string => Boolean(value));
+  const file = candidates.find((candidate) => existsSync(candidate));
+  if (!file) return {};
+  const values: Record<string, string> = {};
+  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+    if (!match || match[1].startsWith("#")) continue;
+    values[match[1]] = match[2].replace(/^(["'])(.*)\1$/, "$2");
+  }
+  return values;
+}
+
+const dotEnv = loadDotEnv();
 const port = Number(process.env.PORT ?? 9222);
 const host = process.env.HOST ?? "127.0.0.1";
 const publicHost = process.env.PUBLIC_HOST ?? host;
@@ -10,6 +29,7 @@ const publicOrigin = (
   process.env.PUBLIC_ORIGIN ?? `${publicProtocol}://${publicHost}:${port}`
 ).replace(/\/$/, "");
 const backendBrowserId = randomUUID();
+const remoteAgentToken = process.env.REMOTE_AGENT_TOKEN ?? dotEnv.REMOTE_AGENT_TOKEN ?? "";
 
 type AgentMessage = {
   id?: string;
@@ -18,6 +38,7 @@ type AgentMessage = {
   pageId?: string;
   url?: string;
   title?: string;
+  token?: string;
   ok?: boolean;
   result?: unknown;
   error?: { message?: string };
@@ -1497,6 +1518,11 @@ function handleAgent(socket: WebSocket): void {
   socket.on("message", (data) => {
     const message = JSON.parse(String(data)) as AgentMessage;
     if (message.type === "hello") {
+      if (remoteAgentToken && message.token !== remoteAgentToken) {
+        send(socket, { type: "hello_ack", ok: false, error: { message: "Authentication failed" } });
+        socket.close(1008, "Authentication failed");
+        return;
+      }
       const browserId = message.browserId ?? "unknown-browser";
       const requestedPageId = message.pageId ?? randomUUID();
       let pageId = requestedPageId;

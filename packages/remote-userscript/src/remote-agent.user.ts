@@ -19,6 +19,8 @@ type AgentRequest = {
   id: string;
   type: string;
   payload?: Record<string, unknown>;
+  ok?: boolean;
+  error?: { message?: string };
 };
 
 type AccessibilityNode = {
@@ -43,6 +45,7 @@ type DomSummary = {
 };
 
 const bridgeStorageKey = "remote-page-agent-bridge-url";
+const bridgeTokenStorageKey = "remote-page-agent-bridge-token";
 const defaultBridgeUrl = "ws://localhost:9222/agent";
 const browserIdStorageKey = "remote-page-agent-browser-id";
 const pageIdStorageKey = "remote-page-agent-page-id";
@@ -97,6 +100,7 @@ let notice: HTMLDivElement | undefined;
 let statusIcon: SVGSVGElement | undefined;
 let operationText: HTMLDivElement | undefined;
 let noticeMenu: HTMLDivElement | undefined;
+let bridgeConfigDialog: HTMLDivElement | undefined;
 const noticeOpacityKey = "remote-page-agent-notice-opacity";
 
 type NoticeKind = "info" | "success" | "error";
@@ -154,6 +158,29 @@ function showNotice(message: string, kind: NoticeKind = "info"): void {
     });
     label.append(opacity);
     menu.append(label);
+    const settingsButton = document.createElement("button");
+    settingsButton.type = "button";
+    settingsButton.textContent = "连接设置";
+    settingsButton.style.cssText = [
+      "display: block",
+      "width: 100%",
+      "margin-top: 12px",
+      "padding: 7px 10px",
+      "border: 1px solid rgba(209, 213, 219, .7)",
+      "border-radius: 6px",
+      "background: rgba(255, 255, 255, .08)",
+      "color: #f9fafb",
+      "cursor: pointer",
+      "font: inherit",
+      "text-align: center",
+    ].join(";");
+    settingsButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (noticeMenu) noticeMenu.style.display = "none";
+      configureBridge();
+    });
+    menu.append(settingsButton);
     element.append(menu);
     element.setAttribute("data-remote-page-agent", "notice");
     element.style.cssText = [
@@ -241,21 +268,125 @@ function getBridgeUrl(): string {
   return GM_getValue<string>(bridgeStorageKey, defaultBridgeUrl).trim();
 }
 
-function configureBridge(): void {
-  const current = getBridgeUrl();
-  const value = window.prompt("Remote Page Agent WebSocket URL", current || defaultBridgeUrl);
-  if (value === null) return;
+function getBridgeToken(): string {
+  return GM_getValue<string>(bridgeTokenStorageKey, "").trim();
+}
 
-  const url = value.trim();
-  if (url !== "" && !/^wss?:\/\//.test(url)) {
-    window.alert("The bridge URL must start with ws:// or wss://");
+function configureBridge(): void {
+  if (bridgeConfigDialog?.isConnected) {
+    bridgeConfigDialog.remove();
+    bridgeConfigDialog = undefined;
     return;
   }
-  GM_setValue(bridgeStorageKey, url || defaultBridgeUrl);
-  socket?.close();
-  socket = undefined;
-  showNotice(url ? `Bridge configured: ${url}` : `Bridge reset to ${defaultBridgeUrl}`);
-  connect();
+
+  const overlay = document.createElement("div");
+  bridgeConfigDialog = overlay;
+  overlay.setAttribute("data-remote-page-agent", "bridge-config");
+  overlay.setAttribute("role", "presentation");
+  overlay.style.cssText = [
+    "position: fixed",
+    "inset: 0",
+    "z-index: 2147483647",
+    "display: flex",
+    "align-items: center",
+    "justify-content: center",
+    "padding: 20px",
+    "background: rgba(0, 0, 0, .45)",
+    "font: 14px/1.4 sans-serif",
+  ].join(";");
+
+  const panel = document.createElement("form");
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "remote-page-agent-config-title");
+  panel.style.cssText = [
+    "width: min(420px, 100%)",
+    "box-sizing: border-box",
+    "padding: 20px",
+    "border-radius: 12px",
+    "background: #fff",
+    "color: #111827",
+    "box-shadow: 0 12px 40px rgba(0, 0, 0, .3)",
+  ].join(";");
+
+  const title = document.createElement("h2");
+  title.id = "remote-page-agent-config-title";
+  title.textContent = "Remote Page Agent 连接设置";
+  title.style.cssText = "margin: 0 0 16px; font-size: 18px;";
+  panel.append(title);
+
+  const field = (labelText: string, type: string, value: string): HTMLInputElement => {
+    const label = document.createElement("label");
+    label.style.cssText = "display: block; margin: 12px 0 0; font-weight: 600;";
+    label.textContent = labelText;
+    const input = document.createElement("input");
+    input.type = type;
+    input.value = value;
+    input.setAttribute("autocomplete", type === "password" ? "new-password" : "url");
+    input.style.cssText = [
+      "display: block",
+      "box-sizing: border-box",
+      "width: 100%",
+      "margin-top: 6px",
+      "padding: 8px 10px",
+      "border: 1px solid #d1d5db",
+      "border-radius: 6px",
+      "font: inherit",
+    ].join(";");
+    label.append(input);
+    panel.append(label);
+    return input;
+  };
+
+  const urlInput = field("服务器地址", "url", getBridgeUrl());
+  const tokenInput = field("连接密码", "password", getBridgeToken());
+
+  const actions = document.createElement("div");
+  actions.style.cssText = "display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "取消";
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.textContent = "保存并连接";
+  for (const button of [cancel, save]) {
+    button.style.cssText =
+      "padding: 8px 12px; border: 0; border-radius: 6px; cursor: pointer; font: inherit;";
+  }
+  save.style.background = "#2563eb";
+  save.style.color = "#fff";
+  cancel.style.background = "#e5e7eb";
+  actions.append(cancel, save);
+  panel.append(actions);
+  overlay.append(panel);
+
+  const close = (): void => {
+    overlay.remove();
+    if (bridgeConfigDialog === overlay) bridgeConfigDialog = undefined;
+  };
+  cancel.addEventListener("click", close);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) close();
+  });
+  panel.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const url = urlInput.value.trim();
+    if (!/^wss?:\/\//.test(url)) {
+      urlInput.setCustomValidity("服务器地址必须以 ws:// 或 wss:// 开头");
+      urlInput.reportValidity();
+      return;
+    }
+    urlInput.setCustomValidity("");
+    GM_setValue(bridgeStorageKey, url);
+    GM_setValue(bridgeTokenStorageKey, tokenInput.value.trim());
+    close();
+    socket?.close();
+    socket = undefined;
+    showNotice("Bridge configuration saved; connecting", "info");
+    connect();
+  });
+  document.body?.append(overlay);
+  urlInput.focus();
 }
 
 GM_registerMenuCommand("Configure Remote Page Agent", configureBridge);
@@ -1350,11 +1481,23 @@ function connect(): void {
   socket = currentSocket;
   currentSocket.addEventListener("open", () => {
     showNotice("Remote Page Agent connected", "success");
-    send({ type: "hello", browserId, pageId, url: location.href, title: document.title });
+    send({
+      type: "hello",
+      browserId,
+      pageId,
+      token: getBridgeToken(),
+      url: location.href,
+      title: document.title,
+    });
   });
   currentSocket.addEventListener("message", (event) => {
     try {
       const message = JSON.parse(String(event.data)) as AgentRequest & { pageId?: string };
+      if (message.type === "hello_ack" && message.ok === false) {
+        showNotice("Remote Page Agent authentication failed", "error");
+        currentSocket.close(1008, "Authentication failed");
+        return;
+      }
       if (message.type === "hello_ack" && typeof message.pageId === "string") {
         pageId = message.pageId;
         try {
