@@ -3,7 +3,7 @@
 // @namespace    remote-page-agent
 // @version      __PACKAGE_VERSION__
 // @description  Connect a page to the remote-page-agent CDP bridge.
-// @icon         https://cdn.jsdelivr.net/gh/ekworp/remote-page-agent@main/assets/remote-page-agent.svg
+// @icon         https://cdn.jsdelivr.net/gh/ekworp/remote-page-agent@main/assets/remote-page-agent.png
 // @match        *://*/*
 // @run-at       document-start
 // @grant        GM_registerMenuCommand
@@ -61,20 +61,20 @@ const temporaryGrantIdleTtlMs = 5 * 60_000;
 const temporaryGrantMaxLifetimeMs = 30 * 60_000;
 
 type Language = "zh" | "en";
+type LanguagePreference = Language | "auto";
 
 const translations: Record<string, Record<Language, string>> = {
   configure: { zh: "连接设置", en: "Connection settings" },
   addCurrentOrigin: { zh: "将当前页面加入白名单", en: "Add current origin to whitelist" },
+  removeCurrentOrigin: { zh: "将当前页面移出白名单", en: "Remove current origin from whitelist" },
   originAdded: { zh: "已将 {{origin}} 加入白名单", en: "Added {{origin}} to the whitelist" },
-  originAlreadyAdded: {
-    zh: "{{origin}} 已在白名单中",
-    en: "{{origin}} is already in the whitelist",
-  },
+  originRemoved: { zh: "已将 {{origin}} 移出白名单", en: "Removed {{origin}} from the whitelist" },
   opacity: { zh: "透明度", en: "Opacity" },
   settingsTitle: { zh: "Remote Page Agent 连接设置", en: "Remote Page Agent connection settings" },
   serverAddress: { zh: "服务器地址", en: "Server address" },
   connectionPassword: { zh: "连接密码", en: "Connection password" },
   language: { zh: "语言", en: "Language" },
+  autoLanguage: { zh: "自动选择", en: "Automatic" },
   chinese: { zh: "中文", en: "Chinese" },
   english: { zh: "英文", en: "English" },
   whitelistEnabled: { zh: "仅自动连接白名单页面", en: "Auto-connect whitelist pages only" },
@@ -119,9 +119,15 @@ const translations: Record<string, Record<Language, string>> = {
   connectionError: { zh: "Remote Page Agent 连接错误", en: "Remote Page Agent connection error" },
 };
 
-function getLanguage(): Language {
+function getLanguagePreference(): LanguagePreference {
   const stored = GM_getValue<string>(languageStorageKey, "");
-  if (stored === "zh" || stored === "en") return stored;
+  if (stored === "zh" || stored === "en" || stored === "auto") return stored;
+  return "auto";
+}
+
+function getLanguage(): Language {
+  const preference = getLanguagePreference();
+  if (preference === "zh" || preference === "en") return preference;
   return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
@@ -275,12 +281,12 @@ function showNotice(message: string, kind: NoticeKind = "info"): void {
     menu.append(settingsButton);
     const whitelistButton = document.createElement("button");
     whitelistButton.type = "button";
-    whitelistButton.textContent = translate("addCurrentOrigin");
     whitelistButton.style.cssText = settingsButton.style.cssText;
+    updateWhitelistButton(whitelistButton);
     whitelistButton.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      addCurrentOriginToWhitelist();
+      toggleCurrentOriginWhitelist(whitelistButton);
     });
     menu.append(whitelistButton);
     element.append(menu);
@@ -391,15 +397,29 @@ function whitelistOrigins(): string[] {
   );
 }
 
-function addCurrentOriginToWhitelist(): void {
+function updateWhitelistButton(button: HTMLButtonElement): void {
+  const origin = normalizeOrigin(location.origin);
+  button.textContent =
+    origin && whitelistOrigins().includes(origin)
+      ? translate("removeCurrentOrigin")
+      : translate("addCurrentOrigin");
+}
+
+function toggleCurrentOriginWhitelist(button: HTMLButtonElement): void {
   const origin = normalizeOrigin(location.origin);
   if (!origin) return;
   const origins = whitelistOrigins();
   if (origins.includes(origin)) {
-    showNotice(translate("originAlreadyAdded", { origin }), "info");
+    GM_setValue(
+      whitelistOriginsStorageKey,
+      origins.filter((candidate) => candidate !== origin),
+    );
+    updateWhitelistButton(button);
+    showNotice(translate("originRemoved", { origin }), "success");
     return;
   }
   GM_setValue(whitelistOriginsStorageKey, [...origins, origin]);
+  updateWhitelistButton(button);
   showNotice(translate("originAdded", { origin }), "success");
 }
 
@@ -573,6 +593,7 @@ function configureBridge(): void {
     "font: inherit",
   ].join(";");
   for (const [value, label] of [
+    ["auto", translate("autoLanguage")],
     ["zh", translate("chinese")],
     ["en", translate("english")],
   ]) {
@@ -581,7 +602,7 @@ function configureBridge(): void {
     option.textContent = label;
     languageSelect.append(option);
   }
-  languageSelect.value = getLanguage();
+  languageSelect.value = getLanguagePreference();
   languageLabel.append(languageSelect);
   panel.append(languageLabel);
 
@@ -665,7 +686,12 @@ function configureBridge(): void {
     originsInput.setCustomValidity("");
     GM_setValue(bridgeStorageKey, url);
     GM_setValue(bridgeTokenStorageKey, tokenInput.value.trim());
-    GM_setValue(languageStorageKey, languageSelect.value === "en" ? "en" : "zh");
+    GM_setValue(
+      languageStorageKey,
+      languageSelect.value === "en" || languageSelect.value === "zh"
+        ? languageSelect.value
+        : "auto",
+    );
     GM_setValue(whitelistEnabledStorageKey, whitelistInput.checked);
     GM_setValue(whitelistOriginsStorageKey, [...new Set(origins.filter(Boolean))]);
     close();
