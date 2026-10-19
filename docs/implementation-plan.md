@@ -85,6 +85,8 @@ Playwright 官方文档推荐使用 Playwright 自带的 Chromium 加载未打�
 - `Input.dispatchKeyEvent` 必须作用于 `document.activeElement`，并保留 `keyDown/keyUp/char` 类型和 `keyCode/which`。合成的 Enter 事件不会自动触发表单提交或框架的“搜索”默认行为，因此 keyUp 后应在 URL 未变化时点击附近的搜索/提交控件，或回退到 `form.requestSubmit()`。
 - SPA 的 `pushState`、`replaceState`、`popstate`、`hashchange` 都需要转发页面 URL/title 变化。
 - 同一标签页的逻辑页面 ID 使用 `sessionStorage` 跨文档导航复用；Bridge 在 userscript 短暂断线时保留页面和 CDP session 10 秒，重连后重绑定，超时后才发送 `Target.targetDestroyed`。
+- `Target.createTarget` 通过已连接页面的固定 `open_page` 命令调用 userscript 的 `GM_openInTab`，并等待新页面使用预分配的逻辑 pageId 完成 hello；`Page.bringToFront` 在当前模型中作为兼容 no-op。
+- 白名单模式只允许授权 origin 自动连接；Bridge 创建的新页面使用一次性临时授权，初始有效期 60 秒，连接后的有效操作将空闲期限延长至 5 分钟，但最长不超过 30 分钟。旧 DOM UID 不得盲目映射到新文档节点。
 - Accessibility Tree 会展平无名称的 `generic`/`none` 布局包装层，保留语义角色、名称和所有交互节点，以降低复杂页面的快照体积而不破坏 UID 操作。
 
 需要观察协议往返时，可在启动桥接服务时设置 `CDP_DEBUG=1`。日志会额外记录 DOM rect、client rect 数量、stable rects、intersection 结果、quad、Input 坐标以及实际命中的元素标签/class（截断，不记录文本内容）。

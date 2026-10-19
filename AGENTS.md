@@ -1,11 +1,15 @@
-# Agent guidance
+# Repository instructions
 
-- The implementation is split into `packages/remote-userscript` (TypeScript compiled userscript) and `packages/cdp-bridge` (TypeScript HTTP/CDP WebSocket bridge); use the root pnpm workspace rather than adding a third runtime package casually.
-- Use pnpm commands and Biome; verified checks are `pnpm install`, `pnpm build`, and `pnpm check`.
-- Follow the intended implementation order: userscript MVP → Node.js WebSocket relay → Manifest V3 extension → Edge/Android compatibility validation.
-- Keep page control (DOM, input, scrolling, and console capture) separate from transport (WebSocket, authentication, reconnect, and storage); this separation is the planned migration boundary.
-- Use the JSON message shape documented in `docs/message-protocol.md`: every request and response has the same unique `id`; return structured errors rather than allowing missing elements to crash the controller.
-- Prefer fixed commands (`get_page_info`, `get_dom_summary`, `query`, `click`, `input`, `scroll`, `get_console`) over arbitrary JavaScript. Any future `eval_safe` must enforce authorization, domain allowlisting, timeouts, output limits, auditing, and sensitive-data restrictions.
-- Treat `docs/implementation-plan.md` and `docs/userscript-to-extension.md` as the source of the planned architecture and migration constraints; update them when the implementation diverges.
-- Security is a design requirement: use authenticated `wss://`, permission checks, and reconnect/timeout handling; never expose an unauthenticated remote-control port or upload passwords, cookies, or sensitive page content by default.
-- For the extension phase, account for isolated content-script worlds, `document_start` for early console capture, and the fact that MV3 service workers can be suspended; do not assume a persistent WebSocket.
+- This is a pnpm workspace with two runtime packages: `packages/remote-userscript` is the browser-side TypeScript userscript, and `packages/cdp-bridge` is the Node.js HTTP/CDP WebSocket bridge. Do not add another runtime package for page control or transport without updating this boundary.
+- Use Node.js 20+ and pnpm. From the repository root, the normal verification order is `pnpm build`, `pnpm check`, then `pnpm --filter @remote-page-agent/cdp-bridge test`.
+- The focused bridge test command is `pnpm --filter @remote-page-agent/cdp-bridge test`; after building, a single test can be selected with `node --test packages/cdp-bridge/test/cdp-session.test.mjs --test-name-pattern='pattern'`.
+- `packages/*/dist` is generated and ignored. Build the userscript with `pnpm build`; its build script reads `packages/remote-userscript/package.json` and injects the package version into `dist/remote-agent.user.js`. Do not edit the generated userscript directly.
+- Keep both package versions aligned. `cdp-bridge/src/index.ts` reads its own package version at runtime for `Browser.getVersion`; the userscript version is injected during its package build.
+- Page control belongs in `remote-userscript`; WebSocket authentication, reconnect/rate limiting, CDP routing, target/session lifecycle, and pending-request handling belong in `cdp-bridge`. Preserve this separation when changing behavior.
+- Agent messages are JSON and request/response IDs must remain correlated; return structured `{ ok: false, error: ... }` responses instead of allowing missing DOM nodes or malformed commands to crash the userscript.
+- Prefer fixed DOM commands and the existing limited evaluation allowlist. Do not add arbitrary JavaScript evaluation, secrets/cookie extraction, or site-specific selectors/logic.
+- The bridge defaults to `127.0.0.1:9222`. Configure `REMOTE_AGENT_TOKEN` (and optionally `REMOTE_AGENT_CONNECTION_WINDOW_MS` / `REMOTE_AGENT_MAX_CONNECTION_ATTEMPTS`) through environment variables or `.env`; never expose an unauthenticated bridge to an untrusted network. `.env` is ignored and `.env.example` documents the supported settings.
+- Preserve page reconnection grace handling, logical page IDs, duplicate-target protection, and target/session lifecycle events; navigation can destroy the userscript before a response is sent, so click/input activation must retain the existing response-before-navigation behavior.
+- Formatting and linting use Biome (`pnpm check`); keep generated `dist` files excluded as configured in `biome.json`.
+- Pushing a `v*` tag triggers `.github/workflows/release.yml`; release builds use `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm build`, and package the userscript and bridge `dist` directories. Update both package versions before creating a release tag.
+- `docs/message-protocol.md`, `docs/implementation-plan.md`, and `docs/userscript-to-extension.md` contain protocol and migration constraints; update them when implementation changes materially diverge from those constraints.

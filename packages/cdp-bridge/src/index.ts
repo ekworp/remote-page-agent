@@ -104,6 +104,7 @@ const sessionOwners = new Map<string, WebSocket>();
 const autoAttachClients = new Set<WebSocket>();
 const autoAttachedTargetsByClient = new Map<WebSocket, Set<string>>();
 const discoveredTargetsByClient = new Map<WebSocket, Set<string>>();
+const pageWaiters = new Map<string, Array<(page: PageConnection) => void>>();
 let nextExecutionContextId = 1;
 const cdpDebug = process.env.CDP_DEBUG === "1" || process.env.CDP_DEBUG === "true";
 const pageReconnectGraceMs = Number(process.env.PAGE_RECONNECT_GRACE_MS ?? 10_000);
@@ -130,6 +131,35 @@ function allowAgentConnection(request: IncomingMessage): boolean {
   recent.push(now);
   connectionAttempts.set(address, recent);
   return true;
+}
+
+function waitForPage(pageId: string): Promise<PageConnection> {
+  const page = pages.get(pageId);
+  if (page) return Promise.resolve(page);
+  return new Promise((resolve, reject) => {
+    const waiter = (connectedPage: PageConnection): void => {
+      clearTimeout(timer);
+      resolve(connectedPage);
+    };
+    const timer = setTimeout(() => {
+      const waiters = pageWaiters.get(pageId) ?? [];
+      pageWaiters.set(
+        pageId,
+        waiters.filter((candidate) => candidate !== waiter),
+      );
+      reject(new Error(`New page did not connect: ${pageId}`));
+    }, 10_000);
+    const waiters = pageWaiters.get(pageId) ?? [];
+    waiters.push(waiter);
+    pageWaiters.set(pageId, waiters);
+  });
+}
+
+function resolvePageWaiters(page: PageConnection): void {
+  const waiters = pageWaiters.get(page.pageId);
+  if (!waiters) return;
+  pageWaiters.delete(page.pageId);
+  for (const waiter of waiters) waiter(page);
 }
 
 function broadcast(value: unknown): void {
@@ -949,6 +979,16 @@ async function tryHandleDomCall(
 async function handleTargetCommand(socket: WebSocket, message: CdpMessage): Promise<boolean> {
   const method = message.method ?? "";
   switch (method) {
+    case "Target.createTarget": {
+      const url = typeof message.params?.url === "string" ? message.params.url : "about:blank";
+      const opener = pageForMessage(message);
+      const targetId = randomUUID();
+      const result = await requestAgent(opener, "open_page", { url, pageId: targetId });
+      if (!result.ok) throw new Error(result.error?.message ?? "Unable to create target");
+      const page = await waitForPage(targetId);
+      send(socket, cdpResult(message, { targetId: page.pageId }));
+      return true;
+    }
     case "Target.getTargets":
       // Only report live pages. Do not synthesize targetCreated here: the
       // command response already refreshes Puppeteer's target cache, and
@@ -1513,6 +1553,7 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
         );
         return;
       case "Target.activateTarget":
+      case "Page.bringToFront":
       case "Page.enable":
       case "Page.setLifecycleEventsEnabled":
       case "Page.removeScriptToEvaluateOnNewDocument":
@@ -1602,6 +1643,7 @@ function handleAgent(socket: WebSocket): void {
         title: message.title ?? "Remote Page",
       };
       pages.set(pageId, page);
+      resolvePageWaiters(page);
       send(socket, { type: "hello_ack", ok: true, browserId, pageId });
       logConnection(`Page connected: browser=${browserId}, page=${pageId}`);
 

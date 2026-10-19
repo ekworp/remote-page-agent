@@ -9,11 +9,16 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_openInTab
 // ==/UserScript==
 
 declare function GM_registerMenuCommand(caption: string, onClick: () => void): void;
 declare function GM_getValue<T>(key: string, defaultValue?: T): T;
 declare function GM_setValue<T>(key: string, value: T): void;
+declare function GM_openInTab(
+  url: string,
+  options?: { active?: boolean; insert?: boolean; setParent?: boolean },
+): unknown;
 
 type AgentRequest = {
   id: string;
@@ -46,14 +51,24 @@ type DomSummary = {
 
 const bridgeStorageKey = "remote-page-agent-bridge-url";
 const bridgeTokenStorageKey = "remote-page-agent-bridge-token";
+const whitelistEnabledStorageKey = "remote-page-agent-whitelist-enabled";
+const whitelistOriginsStorageKey = "remote-page-agent-whitelist-origins";
+const temporaryGrantStorageKey = "remote-page-agent-temporary-grants";
 const defaultBridgeUrl = "ws://localhost:9222/agent";
+const temporaryGrantTtlMs = 60_000;
+const temporaryGrantIdleTtlMs = 5 * 60_000;
+const temporaryGrantMaxLifetimeMs = 30 * 60_000;
 const browserIdStorageKey = "remote-page-agent-browser-id";
 const pageIdStorageKey = "remote-page-agent-page-id";
 const browserId = GM_getValue<string>(browserIdStorageKey, "") || crypto.randomUUID();
 GM_setValue(browserIdStorageKey, browserId);
 let pageId = "";
+const namedPageId = window.name.startsWith("remote-page-agent:")
+  ? window.name.slice("remote-page-agent:".length)
+  : "";
+const fragmentPageId = consumePageIdFragment();
 try {
-  pageId = sessionStorage.getItem(pageIdStorageKey) ?? "";
+  pageId = fragmentPageId || namedPageId || sessionStorage.getItem(pageIdStorageKey) || "";
   if (!pageId) {
     pageId = crypto.randomUUID();
     sessionStorage.setItem(pageIdStorageKey, pageId);
@@ -275,6 +290,109 @@ function getBridgeToken(): string {
   return GM_getValue<string>(bridgeTokenStorageKey, "").trim();
 }
 
+type TemporaryGrant = {
+  origin: string;
+  pageId: string;
+  expiresAt: number;
+  maxExpiresAt: number;
+};
+
+function whitelistEnabled(): boolean {
+  return GM_getValue<boolean>(whitelistEnabledStorageKey, false);
+}
+
+function whitelistOrigins(): string[] {
+  return GM_getValue<string[]>(whitelistOriginsStorageKey, []).filter(
+    (origin): origin is string => typeof origin === "string" && origin.length > 0,
+  );
+}
+
+function normalizeOrigin(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function getTemporaryGrants(): TemporaryGrant[] {
+  const now = Date.now();
+  const grants = GM_getValue<TemporaryGrant[]>(temporaryGrantStorageKey, []).filter(
+    (grant) =>
+      grant &&
+      typeof grant.origin === "string" &&
+      typeof grant.pageId === "string" &&
+      grant.expiresAt > now &&
+      grant.maxExpiresAt > now,
+  );
+  if (grants.length !== GM_getValue<TemporaryGrant[]>(temporaryGrantStorageKey, []).length) {
+    GM_setValue(temporaryGrantStorageKey, grants);
+  }
+  return grants;
+}
+
+function pageHasWhitelistAccess(origin = location.origin, currentPageId = pageId): boolean {
+  if (!whitelistEnabled()) return true;
+  if (whitelistOrigins().includes(origin)) return true;
+  return getTemporaryGrants().some(
+    (grant) => grant.origin === origin && (!grant.pageId || grant.pageId === currentPageId),
+  );
+}
+
+function addTemporaryGrant(url: string, targetPageId: string): void {
+  const origin = normalizeOrigin(url);
+  if (!origin || whitelistOrigins().includes(origin)) return;
+  const now = Date.now();
+  const grants = getTemporaryGrants().filter((grant) => grant.pageId !== targetPageId);
+  grants.push({
+    origin,
+    pageId: targetPageId,
+    expiresAt: now + temporaryGrantTtlMs,
+    maxExpiresAt: now + temporaryGrantMaxLifetimeMs,
+  });
+  GM_setValue(temporaryGrantStorageKey, grants);
+}
+
+function touchTemporaryGrant(): void {
+  if (!whitelistEnabled()) return;
+  const now = Date.now();
+  const grants = getTemporaryGrants();
+  let changed = false;
+  for (const grant of grants) {
+    if (grant.origin !== location.origin || grant.pageId !== pageId) continue;
+    grant.expiresAt = Math.min(now + temporaryGrantIdleTtlMs, grant.maxExpiresAt);
+    changed = true;
+  }
+  if (changed) GM_setValue(temporaryGrantStorageKey, grants);
+}
+
+function consumePageIdFragment(): string {
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (!params.has("remote-page-agent-page")) return "";
+  const value = params.get("remote-page-agent-page") ?? "";
+  const originalHash = params.get("remote-page-agent-original-hash");
+  try {
+    const cleanUrl = `${location.pathname}${location.search}${originalHash ? `#${originalHash}` : ""}`;
+    history.replaceState(history.state, document.title, cleanUrl);
+  } catch {
+    // The URL can be unavailable during very early document startup.
+  }
+  return value;
+}
+
+function urlWithPageId(url: string, targetPageId: string): string {
+  const target = new URL(url, location.href);
+  const originalHash = target.hash.slice(1);
+  const marker = new URLSearchParams({
+    "remote-page-agent-page": targetPageId,
+    ...(originalHash ? { "remote-page-agent-original-hash": originalHash } : {}),
+  });
+  target.hash = marker.toString();
+  return target.href;
+}
+
 function configureBridge(): void {
   if (bridgeConfigDialog?.isConnected) {
     bridgeConfigDialog.remove();
@@ -344,6 +462,37 @@ function configureBridge(): void {
   const urlInput = field("服务器地址", "url", getBridgeUrl());
   const tokenInput = field("连接密码", "password", getBridgeToken());
 
+  const whitelistLabel = document.createElement("label");
+  whitelistLabel.style.cssText = "display: flex; gap: 8px; align-items: center; margin-top: 16px;";
+  const whitelistInput = document.createElement("input");
+  whitelistInput.type = "checkbox";
+  whitelistInput.checked = whitelistEnabled();
+  const whitelistText = document.createElement("span");
+  whitelistText.textContent = "仅自动连接白名单页面";
+  whitelistLabel.append(whitelistInput, whitelistText);
+  panel.append(whitelistLabel);
+
+  const originsLabel = document.createElement("label");
+  originsLabel.style.cssText = "display: block; margin-top: 10px; font-weight: 600;";
+  originsLabel.textContent = "白名单 origin（每行一个，例如 https://example.com）";
+  const originsInput = document.createElement("textarea");
+  originsInput.value = whitelistOrigins().join("\n");
+  originsInput.rows = 4;
+  originsInput.setAttribute("autocomplete", "off");
+  originsInput.style.cssText = [
+    "display: block",
+    "box-sizing: border-box",
+    "width: 100%",
+    "margin-top: 6px",
+    "padding: 8px 10px",
+    "border: 1px solid #d1d5db",
+    "border-radius: 6px",
+    "font: inherit",
+    "resize: vertical",
+  ].join(";");
+  originsLabel.append(originsInput);
+  panel.append(originsLabel);
+
   const actions = document.createElement("div");
   actions.style.cssText = "display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;";
   const cancel = document.createElement("button");
@@ -380,8 +529,21 @@ function configureBridge(): void {
       return;
     }
     urlInput.setCustomValidity("");
+    const originLines = originsInput.value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const origins = originLines.map(normalizeOrigin);
+    if (origins.some((origin) => !origin)) {
+      originsInput.setCustomValidity("白名单必须是 http:// 或 https:// origin，每行一个");
+      originsInput.reportValidity();
+      return;
+    }
+    originsInput.setCustomValidity("");
     GM_setValue(bridgeStorageKey, url);
     GM_setValue(bridgeTokenStorageKey, tokenInput.value.trim());
+    GM_setValue(whitelistEnabledStorageKey, whitelistInput.checked);
+    GM_setValue(whitelistOriginsStorageKey, [...new Set(origins.filter(Boolean))]);
     close();
     autoReconnectDisabled = false;
     reconnectAttempt = 0;
@@ -408,6 +570,7 @@ function pageEvent(method: string, params: Record<string, unknown>): void {
 }
 
 function response(id: string, result: unknown, meta?: Record<string, unknown>): void {
+  touchTemporaryGrant();
   send({ id, ok: true, result, ...meta });
 }
 
@@ -1354,6 +1517,21 @@ async function execute(request: AgentRequest): Promise<void> {
       response(request.id, { url: payload.url });
       return;
     }
+    case "open_page": {
+      if (typeof payload.url !== "string" || typeof payload.pageId !== "string") {
+        throw new Error("url and pageId are required");
+      }
+      addTemporaryGrant(payload.url, payload.pageId);
+      const targetUrl = urlWithPageId(payload.url, payload.pageId);
+      if (typeof GM_openInTab === "function") {
+        GM_openInTab(targetUrl, { active: true, insert: true, setParent: true });
+      } else {
+        const popup = window.open(targetUrl, `remote-page-agent:${payload.pageId}`);
+        if (!popup) throw new Error("The browser blocked opening a new page");
+      }
+      response(request.id, { opened: true, pageId: payload.pageId });
+      return;
+    }
     case "history_back":
       history.back();
       response(request.id, { ok: true });
@@ -1474,7 +1652,12 @@ async function execute(request: AgentRequest): Promise<void> {
 
 function connect(): void {
   const bridgeUrl = getBridgeUrl();
-  if (!bridgeUrl || autoReconnectDisabled) return;
+  if (!bridgeUrl || autoReconnectDisabled || !pageHasWhitelistAccess()) {
+    if (whitelistEnabled() && !pageHasWhitelistAccess()) {
+      showNotice("当前页面不在自动连接白名单中", "info");
+    }
+    return;
+  }
   if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return;
   showNotice("Connecting to Remote Page Agent", "info");
   const currentSocket = new WebSocket(bridgeUrl);
