@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Remote Page Agent
 // @namespace    remote-page-agent
-// @version      0.1.0
+// @version      __PACKAGE_VERSION__
 // @description  Connect a page to the remote-page-agent CDP bridge.
 // @icon         https://raw.githubusercontent.com/ekworp/remote-page-agent/main/assets/remote-page-agent.svg
 // @match        *://*/*

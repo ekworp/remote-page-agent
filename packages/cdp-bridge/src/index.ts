@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
+import { createRequire } from "node:module";
 import { type WebSocket, WebSocketServer } from "ws";
 
 function loadDotEnv(): Record<string, string> {
@@ -28,6 +29,8 @@ const publicProtocol = process.env.PUBLIC_PROTOCOL ?? "ws";
 const publicOrigin = (
   process.env.PUBLIC_ORIGIN ?? `${publicProtocol}://${publicHost}:${port}`
 ).replace(/\/$/, "");
+const require = createRequire(import.meta.url);
+const appVersion = (require("../package.json") as { version: string }).version;
 const backendBrowserId = randomUUID();
 const remoteAgentToken = process.env.REMOTE_AGENT_TOKEN ?? dotEnv.REMOTE_AGENT_TOKEN ?? "";
 
@@ -1497,6 +1500,18 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
     if (await handleRuntimeCommand(socket, message)) return;
     if (await handlePageCommand(socket, message)) return;
     switch (method) {
+      case "Browser.getVersion":
+        send(
+          socket,
+          cdpResult(message, {
+            protocolVersion: "1.3",
+            product: `Remote Page Agent/${appVersion}`,
+            revision: "remote-page-agent",
+            userAgent: "remote-page-agent",
+            jsVersion: "ECMAScript",
+          }),
+        );
+        return;
       case "Target.activateTarget":
       case "Page.enable":
       case "Page.setLifecycleEventsEnabled":
