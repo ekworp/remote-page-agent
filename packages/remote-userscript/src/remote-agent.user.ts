@@ -55,6 +55,7 @@ const languageStorageKey = "remote-page-agent-language";
 const whitelistEnabledStorageKey = "remote-page-agent-whitelist-enabled";
 const whitelistOriginsStorageKey = "remote-page-agent-whitelist-origins";
 const temporaryGrantStorageKey = "remote-page-agent-temporary-grants";
+const commandHistoryLimitStorageKey = "remote-page-agent-command-history-limit";
 const defaultBridgeUrl = "ws://localhost:9222/agent";
 const temporaryGrantTtlMs = 60_000;
 const temporaryGrantIdleTtlMs = 5 * 60_000;
@@ -70,6 +71,9 @@ const translations: Record<string, Record<Language, string>> = {
   originAdded: { zh: "已将 {{origin}} 加入白名单", en: "Added {{origin}} to the whitelist" },
   originRemoved: { zh: "已将 {{origin}} 移出白名单", en: "Removed {{origin}} from the whitelist" },
   opacity: { zh: "透明度", en: "Opacity" },
+  commandHistory: { zh: "命令执行历史", en: "Command history" },
+  noCommandHistory: { zh: "暂无命令记录", en: "No commands yet" },
+  historyLimit: { zh: "最多保留历史条数（1-200）", en: "Maximum history entries (1-200)" },
   settingsTitle: { zh: "Remote Page Agent 连接设置", en: "Remote Page Agent connection settings" },
   serverAddress: { zh: "服务器地址", en: "Server address" },
   connectionPassword: { zh: "连接密码", en: "Connection password" },
@@ -198,10 +202,69 @@ let notice: HTMLDivElement | undefined;
 let statusIcon: SVGSVGElement | undefined;
 let operationText: HTMLDivElement | undefined;
 let noticeMenu: HTMLDivElement | undefined;
+let historyList: HTMLUListElement | undefined;
 let bridgeConfigDialog: HTMLDivElement | undefined;
 const noticeOpacityKey = "remote-page-agent-notice-opacity";
 
 type NoticeKind = "info" | "success" | "error";
+type CommandStatus = "pending" | "success" | "error";
+type CommandHistoryEntry = {
+  id: string;
+  type: string;
+  timestamp: number;
+  status: CommandStatus;
+};
+
+const commandHistory: CommandHistoryEntry[] = [];
+const commandHistoryById = new Map<string, CommandHistoryEntry>();
+const defaultCommandHistoryLimit = 30;
+
+function commandHistoryLimit(): number {
+  const value = GM_getValue<number>(commandHistoryLimitStorageKey, defaultCommandHistoryLimit);
+  return Number.isInteger(value) ? Math.max(1, Math.min(200, value)) : defaultCommandHistoryLimit;
+}
+
+function trimCommandHistory(): void {
+  while (commandHistory.length > commandHistoryLimit()) {
+    const removed = commandHistory.shift();
+    if (removed) commandHistoryById.delete(removed.id);
+  }
+}
+
+function renderCommandHistory(): void {
+  if (!historyList) return;
+  historyList.replaceChildren();
+  if (commandHistory.length === 0) {
+    const empty = document.createElement("li");
+    empty.textContent = translate("noCommandHistory");
+    empty.style.color = "#9ca3af";
+    historyList.append(empty);
+    return;
+  }
+  for (const entry of [...commandHistory].reverse()) {
+    const item = document.createElement("li");
+    const status = entry.status === "success" ? "✓" : entry.status === "error" ? "✕" : "…";
+    const time = new Date(entry.timestamp).toLocaleTimeString();
+    item.textContent = `${time}  ${status}  ${entry.type}`;
+    item.style.color = entry.status === "error" ? "#fca5a5" : "#d1d5db";
+    historyList.append(item);
+  }
+}
+
+function recordCommand(id: string, type: string): void {
+  const entry: CommandHistoryEntry = { id, type, timestamp: Date.now(), status: "pending" };
+  commandHistory.push(entry);
+  commandHistoryById.set(id, entry);
+  trimCommandHistory();
+  renderCommandHistory();
+}
+
+function completeCommand(id: string, status: Exclude<CommandStatus, "pending">): void {
+  const entry = commandHistoryById.get(id);
+  if (!entry) return;
+  entry.status = status;
+  renderCommandHistory();
+}
 
 function showNotice(message: string, kind: NoticeKind = "info"): void {
   if (!notice) {
@@ -224,7 +287,7 @@ function showNotice(message: string, kind: NoticeKind = "info"): void {
       "width: 220px",
       "padding: 12px",
       "border-radius: 10px",
-      "background: rgba(17, 24, 39, .96)",
+      "background: rgba(17, 24, 39, var(--rpa-alpha))",
       "box-shadow: 0 4px 18px rgba(0, 0, 0, .3)",
       "color: #f9fafb",
       "font: 12px/1.4 sans-serif",
@@ -238,6 +301,21 @@ function showNotice(message: string, kind: NoticeKind = "info"): void {
     operationText = document.createElement("div");
     operationText.style.cssText = "margin-top: 8px; color: #d1d5db; word-break: break-word;";
     menu.append(operationText);
+    const historyHeading = document.createElement("strong");
+    historyHeading.textContent = translate("commandHistory");
+    historyHeading.style.cssText = "display: block; margin-top: 12px;";
+    menu.append(historyHeading);
+    historyList = document.createElement("ul");
+    historyList.style.cssText = [
+      "max-height: 180px",
+      "overflow: auto",
+      "margin: 6px 0 0",
+      "padding: 0",
+      "list-style: none",
+      "font: 11px/1.5 monospace",
+    ].join(";");
+    menu.append(historyList);
+    renderCommandHistory();
     const label = document.createElement("label");
     label.style.cssText = "display: block; margin-top: 10px;";
     label.textContent = `${translate("opacity")} `;
@@ -392,7 +470,8 @@ function whitelistEnabled(): boolean {
 }
 
 function whitelistOrigins(): string[] {
-  return GM_getValue<string[]>(whitelistOriginsStorageKey, []).filter(
+  const storedOrigins = GM_getValue<unknown>(whitelistOriginsStorageKey, []);
+  return (Array.isArray(storedOrigins) ? storedOrigins : []).filter(
     (origin): origin is string => typeof origin === "string" && origin.length > 0,
   );
 }
@@ -435,15 +514,19 @@ function normalizeOrigin(value: string): string | undefined {
 
 function getTemporaryGrants(): TemporaryGrant[] {
   const now = Date.now();
-  const grants = GM_getValue<TemporaryGrant[]>(temporaryGrantStorageKey, []).filter(
+  const storedValue = GM_getValue<unknown>(temporaryGrantStorageKey, []);
+  const storedGrants = Array.isArray(storedValue) ? storedValue : [];
+  const grants = storedGrants.filter(
     (grant) =>
       grant &&
       typeof grant.origin === "string" &&
       typeof grant.pageId === "string" &&
+      Number.isFinite(grant.expiresAt) &&
+      Number.isFinite(grant.maxExpiresAt) &&
       grant.expiresAt > now &&
       grant.maxExpiresAt > now,
   );
-  if (grants.length !== GM_getValue<TemporaryGrant[]>(temporaryGrantStorageKey, []).length) {
+  if (grants.length !== storedGrants.length) {
     GM_setValue(temporaryGrantStorageKey, grants);
   }
   return grants;
@@ -577,6 +660,14 @@ function configureBridge(): void {
 
   const urlInput = field(translate("serverAddress"), "url", getBridgeUrl());
   const tokenInput = field(translate("connectionPassword"), "password", getBridgeToken());
+  const historyLimitInput = field(
+    translate("historyLimit"),
+    "number",
+    String(commandHistoryLimit()),
+  );
+  historyLimitInput.min = "1";
+  historyLimitInput.max = "200";
+  historyLimitInput.step = "1";
 
   const languageLabel = document.createElement("label");
   languageLabel.style.cssText = "display: block; margin-top: 12px; font-weight: 600;";
@@ -684,8 +775,17 @@ function configureBridge(): void {
       return;
     }
     originsInput.setCustomValidity("");
+    const historyLimit = Number(historyLimitInput.value);
+    if (!Number.isInteger(historyLimit) || historyLimit < 1 || historyLimit > 200) {
+      historyLimitInput.setCustomValidity(translate("historyLimit"));
+      historyLimitInput.reportValidity();
+      return;
+    }
+    historyLimitInput.setCustomValidity("");
     GM_setValue(bridgeStorageKey, url);
     GM_setValue(bridgeTokenStorageKey, tokenInput.value.trim());
+    GM_setValue(commandHistoryLimitStorageKey, historyLimit);
+    trimCommandHistory();
     GM_setValue(
       languageStorageKey,
       languageSelect.value === "en" || languageSelect.value === "zh"
@@ -720,11 +820,13 @@ function pageEvent(method: string, params: Record<string, unknown>): void {
 }
 
 function response(id: string, result: unknown, meta?: Record<string, unknown>): void {
+  completeCommand(id, "success");
   touchTemporaryGrant();
   send({ id, ok: true, result, ...meta });
 }
 
 function failure(id: string, error: unknown): void {
+  completeCommand(id, "error");
   const message = error instanceof Error ? error.message : String(error);
   showNotice(translate("commandFailed", { message }), "error");
   send({
@@ -735,6 +837,10 @@ function failure(id: string, error: unknown): void {
       message,
     },
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isFunctionExpression(code: string): boolean {
@@ -1620,8 +1726,8 @@ async function execute(request: AgentRequest): Promise<void> {
       return;
     }
     case "click":
-      selector(payload).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      response(request.id, { clicked: true });
+      scheduleElementClick(selector(payload));
+      response(request.id, { clicked: true, scheduledClick: true });
       return;
     case "click_text": {
       const text = typeof payload.text === "string" ? payload.text.trim() : "";
@@ -1632,8 +1738,8 @@ async function execute(request: AgentRequest): Promise<void> {
       if (!(element instanceof HTMLElement)) throw new Error(`text not found: ${text}`);
       const target = element.closest("a,button,[role=button]") ?? element;
       if (!(target instanceof HTMLElement)) throw new Error("element is not clickable");
-      target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      response(request.id, { clicked: true, text });
+      scheduleElementClick(target);
+      response(request.id, { clicked: true, scheduledClick: true, text });
       return;
     }
     case "input": {
@@ -1678,8 +1784,10 @@ async function execute(request: AgentRequest): Promise<void> {
       if (typeof payload.url !== "string") {
         throw new Error("url is required");
       }
-      location.href = payload.url;
       response(request.id, { url: payload.url });
+      window.setTimeout(() => {
+        location.href = payload.url as string;
+      }, 0);
       return;
     }
     case "open_page": {
@@ -1698,12 +1806,12 @@ async function execute(request: AgentRequest): Promise<void> {
       return;
     }
     case "history_back":
-      history.back();
       response(request.id, { ok: true });
+      window.setTimeout(() => history.back(), 0);
       return;
     case "reload":
-      location.reload();
       response(request.id, { ok: true });
+      window.setTimeout(() => location.reload(), 0);
       return;
     case "stop_loading":
       window.stop();
@@ -1851,7 +1959,9 @@ function connect(): void {
   });
   currentSocket.addEventListener("message", (event) => {
     try {
-      const message = JSON.parse(String(event.data)) as AgentRequest & { pageId?: string };
+      const parsed: unknown = JSON.parse(String(event.data));
+      if (!isRecord(parsed)) throw new Error("Incoming message must be an object");
+      const message = parsed as AgentRequest & { pageId?: string };
       if (message.type === "hello_ack" && message.ok === false) {
         autoReconnectDisabled = true;
         showNotice(translate("authenticationFailed"), "error");
@@ -1871,6 +1981,18 @@ function connect(): void {
         }
         return;
       }
+      if (typeof message.id !== "string" || !message.id) {
+        throw new Error("Incoming command requires a non-empty id");
+      }
+      if (typeof message.type !== "string" || !message.type) {
+        failure(message.id, new Error("Incoming command requires a non-empty type"));
+        return;
+      }
+      if (message.payload !== undefined && !isRecord(message.payload)) {
+        failure(message.id, new Error("Command payload must be an object"));
+        return;
+      }
+      recordCommand(message.id, message.type);
       void execute(message).catch((error) => failure(message.id, error));
     } catch (error) {
       console.error("Remote Page Agent message error", error);
