@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Remote Page Agent",
+  "name": "网页操盘手 | Remote Page Agent",
   "version": "0.3.1",
-  "description": "Connect browser pages to a Remote Page Agent CDP bridge.",
+  "description": "Let AI remotely control browser pages through a CDP bridge.",
   "permissions": ["alarms", "storage", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": {
@@ -18,7 +18,7 @@
   ],
   "options_page": "options.html",
   "action": {
-    "default_title": "Remote Page Agent settings",
+    "default_title": "网页操盘手 settings",
     "default_popup": "popup.html"
   }
 }

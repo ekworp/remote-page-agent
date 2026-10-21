@@ -1,6 +1,6 @@
-# Remote Page Agent Extension
+# 网页操盘手扩展 | Remote Page Agent Extension
 
-This is the Chromium Manifest V3 version of Remote Page Agent.
+This is the Chromium Manifest V3 version of 网页操盘手 (Remote Page Agent).
 
 The background service worker owns one bridge connection per tab. A content
 script handles page commands and sends page events back to the worker. This

@@ -1,10 +1,10 @@
-# Remote Page Agent
+# 网页操盘手 | Remote Page Agent
 
 ![Remote Page Agent](assets/remote-page-agent.svg)
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-Remote Page Agent lets an agent control pages in a mobile browser. A userscript runs in each page and communicates with a small Node.js bridge over WebSocket. The bridge exposes a limited CDP endpoint, so CDP clients can connect without enabling Chrome remote debugging on the phone.
+网页操盘手（Remote Page Agent） lets an agent remotely control browser pages. A userscript runs in each page and communicates with a small Node.js bridge over WebSocket. The bridge exposes a limited CDP endpoint, so CDP clients can connect without enabling Chrome remote debugging in the browser.
 
 This is an early prototype. Do not expose it directly to the public internet.
 

@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Remote Page Agent
+// @name         网页操盘手 | Remote Page Agent
 // @namespace    remote-page-agent
 // @version      __PACKAGE_VERSION__
-// @description  Connect a page to the remote-page-agent CDP bridge.
+// @description  Let AI remotely control browser pages through a userscript and WebSocket.
 // @icon         https://cdn.jsdelivr.net/gh/ekworp/remote-page-agent@main/assets/remote-page-agent.png
 // @match        *://*/*
 // @run-at       document-start

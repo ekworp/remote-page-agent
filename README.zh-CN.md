@@ -1,10 +1,10 @@
-# Remote Page Agent
+# 网页操盘手 | Remote Page Agent
 
 ![Remote Page Agent](assets/remote-page-agent.svg)
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-Remote Page Agent 让 AI 通过油猴脚本连接手机浏览器中的网页。脚本通过 WebSocket 与 Node.js 桥接服务通信，桥接服务提供有限的 CDP 接口，因此不需要在手机浏览器上开启 Chrome 远程调试。
+网页操盘手（Remote Page Agent）让 AI 通过油猴脚本连接浏览器中的网页。脚本通过 WebSocket 与 Node.js 桥接服务通信，桥接服务提供有限的 CDP 接口，因此不需要在浏览器中开启 Chrome 远程调试。
 
 这是一个早期原型，请不要直接暴露在公网中。
 
