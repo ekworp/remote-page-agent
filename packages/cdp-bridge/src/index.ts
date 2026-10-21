@@ -92,6 +92,9 @@ type PendingRequest = {
 
 const pages = new Map<string, PageConnection>();
 const clients = new Set<WebSocket>();
+const agentSockets = new Set<WebSocket>();
+const agentSocketAlive = new WeakMap<WebSocket, boolean>();
+const agentHeartbeatIntervalMs = 30_000;
 const pending = new Map<string, PendingRequest>();
 const sessions = new Map<string, string>();
 const functionHandles = new Map<string, string>();
@@ -1603,6 +1606,9 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
 
 function handleAgent(socket: WebSocket): void {
   let page: PageConnection | undefined;
+  agentSockets.add(socket);
+  agentSocketAlive.set(socket, true);
+  socket.on("pong", () => agentSocketAlive.set(socket, true));
   logConnection("Userscript WebSocket connected");
   socket.on("message", (data) => {
     const message = JSON.parse(String(data)) as AgentMessage;
@@ -1699,6 +1705,7 @@ function handleAgent(socket: WebSocket): void {
     }
   });
   socket.on("close", (code, reason) => {
+    agentSockets.delete(socket);
     logConnection(
       `Userscript WebSocket closed: code=${code} reason=${String(reason).slice(0, 120)}`,
     );
@@ -1736,6 +1743,22 @@ function handleAgent(socket: WebSocket): void {
     logConnection("Userscript WebSocket disconnected");
   });
 }
+
+const agentHeartbeatTimer = setInterval(() => {
+  for (const socket of agentSockets) {
+    if (socket.readyState !== socket.OPEN) {
+      agentSockets.delete(socket);
+      continue;
+    }
+    if (agentSocketAlive.get(socket) === false) {
+      logConnection("Terminating unresponsive userscript WebSocket");
+      socket.terminate();
+      continue;
+    }
+    agentSocketAlive.set(socket, false);
+    socket.ping();
+  }
+}, agentHeartbeatIntervalMs);
 
 const server = createServer((request, response) => {
   if (request.url === "/json/version") {
@@ -1819,6 +1842,7 @@ server.listen(port, host, () => {
 });
 
 function shutdown(): void {
+  clearInterval(agentHeartbeatTimer);
   for (const client of clients) client.close(1001, "Server shutting down");
   for (const page of pages.values()) page.socket.close(1001, "Server shutting down");
   server.close(() => process.exit(0));

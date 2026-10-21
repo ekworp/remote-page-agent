@@ -2002,28 +2002,39 @@ function connect(): void {
     if (socket === currentSocket) showNotice(translate("disconnected"), "error");
     if (socket !== currentSocket || !getBridgeUrl() || autoReconnectDisabled) return;
     reconnectAttempt += 1;
-    if (reconnectAttempt > 6) {
-      autoReconnectDisabled = true;
-      showNotice(translate("reconnectStopped"), "error");
-      return;
-    }
-    const delay = reconnectAttempt <= 3 ? 5000 : 10000;
+    const delay = Math.min(60_000, 1000 * 2 ** Math.min(reconnectAttempt - 1, 6));
+    const jitter = Math.round(delay * (0.8 + Math.random() * 0.4));
     showNotice(
       translate("reconnectAttempt", {
         attempt: reconnectAttempt,
-        seconds: delay / 1000,
+        seconds: Math.round(jitter / 1000),
       }),
       "info",
     );
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = undefined;
       connect();
-    }, delay);
+    }, jitter);
   });
   currentSocket.addEventListener("error", () => {
     if (socket === currentSocket) showNotice(translate("connectionError"), "error");
   });
 }
+
+function reconnectWhenPageIsActive(): void {
+  if (document.visibilityState === "hidden") return;
+  if (!getBridgeUrl() || autoReconnectDisabled) return;
+  if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return;
+  if (reconnectTimer !== undefined) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
+  connect();
+}
+
+document.addEventListener("visibilitychange", reconnectWhenPageIsActive);
+window.addEventListener("pageshow", reconnectWhenPageIsActive);
+window.addEventListener("focus", reconnectWhenPageIsActive);
 
 window.addEventListener("load", () => {
   pageEvent("Page.loadEventFired", { timestamp: Date.now() / 1000 });
