@@ -1,3 +1,5 @@
+// @ts-nocheck
+
 const nodesById = new Map();
 let nextBackendNodeId = 1;
 

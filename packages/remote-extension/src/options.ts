@@ -1,3 +1,7 @@
+// @ts-nocheck
+
+export {};
+
 const defaults = {
   bridgeUrl: "ws://localhost:9222/agent",
   bridgeToken: "",

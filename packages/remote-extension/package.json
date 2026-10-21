@@ -1,0 +1,14 @@
+{
+  "name": "@remote-page-agent/remote-extension",
+  "private": true,
+  "version": "0.3.1",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.270",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,3 +1,7 @@
+// @ts-nocheck
+
+export {};
+
 const translations = {
   en: {
     title: "Remote Page Agent",

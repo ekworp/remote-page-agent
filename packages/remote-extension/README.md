@@ -9,6 +9,14 @@ Content Security Policy.
 
 ## Load locally
 
+Build the extension first:
+
+```bash
+pnpm --filter @remote-page-agent/remote-extension build
+```
+
+Then:
+
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Choose **Load unpacked** and select this directory.

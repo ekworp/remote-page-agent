@@ -1,7 +1,23 @@
 const DEFAULT_BRIDGE_URL = "ws://localhost:9222/agent";
 const RECONNECT_ALARM_PREFIX = "remote-page-agent-reconnect:";
-const connections = new Map();
-let browserIdPromise;
+type TabConnection = {
+  tabId: number;
+  pageId: string;
+  attempt: number;
+  closedByExtension: boolean;
+  socket?: WebSocket;
+  retryTimer?: number;
+};
+type BridgeMessage = {
+  type?: string;
+  id?: string;
+  pageId?: string;
+  ok?: boolean;
+  [key: string]: unknown;
+};
+
+const connections = new Map<number, TabConnection>();
+let browserIdPromise: Promise<string> | undefined;
 
 function getBrowserId() {
   if (!browserIdPromise) {
@@ -119,9 +135,9 @@ async function connectTab(tabId, tab) {
     );
   });
   socket.addEventListener("message", async (event) => {
-    let message;
+    let message: BridgeMessage;
     try {
-      message = JSON.parse(String(event.data));
+      message = JSON.parse(String(event.data)) as BridgeMessage;
     } catch {
       return;
     }
