@@ -3,7 +3,7 @@
   "name": "Remote Page Agent",
   "version": "0.3.1",
   "description": "Connect browser pages to a Remote Page Agent CDP bridge.",
-  "permissions": ["storage", "tabs"],
+  "permissions": ["alarms", "storage", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "src/background.js",
@@ -18,6 +18,7 @@
   ],
   "options_page": "options.html",
   "action": {
-    "default_title": "Remote Page Agent settings"
+    "default_title": "Remote Page Agent settings",
+    "default_popup": "popup.html"
   }
 }

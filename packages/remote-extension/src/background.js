@@ -1,4 +1,5 @@
 const DEFAULT_BRIDGE_URL = "ws://localhost:9222/agent";
+const RECONNECT_ALARM_PREFIX = "remote-page-agent-reconnect:";
 const connections = new Map();
 let browserIdPromise;
 
@@ -20,12 +21,47 @@ async function getSettings() {
     bridgeToken: "",
     whitelistEnabled: false,
     whitelistOrigins: [],
+    language: "auto",
+    commandHistoryLimit: 50,
   });
   return {
     bridgeUrl: String(values.bridgeUrl || DEFAULT_BRIDGE_URL).trim(),
     bridgeToken: String(values.bridgeToken || "").trim(),
     whitelistEnabled: Boolean(values.whitelistEnabled),
     whitelistOrigins: Array.isArray(values.whitelistOrigins) ? values.whitelistOrigins : [],
+    language: values.language === "zh" || values.language === "en" ? values.language : "auto",
+    commandHistoryLimit: Math.max(1, Math.min(200, Number(values.commandHistoryLimit) || 50)),
+  };
+}
+
+async function recordHistory(id, type, status) {
+  if (typeof id !== "string" || !id || typeof type !== "string") return;
+  const settings = await getSettings();
+  const values = await chrome.storage.local.get({ commandHistory: [] });
+  const history = Array.isArray(values.commandHistory) ? values.commandHistory : [];
+  const existing = history.find((entry) => entry.id === id);
+  if (existing) {
+    existing.status = status;
+    existing.timestamp = Date.now();
+  } else {
+    history.unshift({ id, type, status, timestamp: Date.now() });
+  }
+  await chrome.storage.local.set({
+    commandHistory: history.slice(0, settings.commandHistoryLimit),
+  });
+}
+
+async function popupState() {
+  const settings = await getSettings();
+  const values = await chrome.storage.local.get({ commandHistory: [] });
+  return {
+    language: settings.language,
+    history: Array.isArray(values.commandHistory) ? values.commandHistory : [],
+    connections: Array.from(connections.values()).map((connection) => ({
+      tabId: connection.tabId,
+      pageId: connection.pageId,
+      connected: connection.socket?.readyState === WebSocket.OPEN,
+    })),
   };
 }
 
@@ -58,6 +94,7 @@ async function connectTab(tabId, tab) {
     if (!settings.whitelistOrigins.includes(origin)) return;
   }
   if (connection?.retryTimer) clearTimeout(connection.retryTimer);
+  await chrome.alarms.clear(`${RECONNECT_ALARM_PREFIX}${tabId}`);
   connection = {
     tabId,
     pageId: connection?.pageId || crypto.randomUUID(),
@@ -90,6 +127,14 @@ async function connectTab(tabId, tab) {
     }
     if (message.type === "hello_ack" && typeof message.pageId === "string") {
       connection.pageId = message.pageId;
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: "bridge_ready" });
+      } catch {
+        // The tab can still be loading its content script.
+      }
+    }
+    if (typeof message.id === "string" && typeof message.type === "string") {
+      void recordHistory(message.id, message.type, "pending");
     }
     try {
       await chrome.tabs.sendMessage(tabId, { type: "bridge_message", message });
@@ -101,22 +146,31 @@ async function connectTab(tabId, tab) {
     if (connections.get(tabId)?.socket !== socket || connection.closedByExtension) return;
     connection.attempt += 1;
     const delay = Math.min(60_000, 1000 * 2 ** Math.min(connection.attempt - 1, 6));
-    connection.retryTimer = setTimeout(() => {
-      connection.retryTimer = undefined;
-      chrome.tabs
-        .get(tabId)
-        .then((currentTab) => connectTab(tabId, currentTab))
-        .catch(() => closeConnection(tabId));
-    }, delay);
+    chrome.alarms.create(`${RECONNECT_ALARM_PREFIX}${tabId}`, { when: Date.now() + delay });
   });
 }
 
 function sendToBridge(tabId, message) {
   const socket = connections.get(tabId)?.socket;
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  if (typeof message?.id === "string" && typeof message?.type === "string") {
+    void recordHistory(
+      message.id,
+      message.type,
+      message.ok === true ? "success" : message.ok === false ? "error" : "pending",
+    );
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "popup_state") {
+    popupState().then(sendResponse);
+    return true;
+  }
+  if (message?.type === "clear_history") {
+    chrome.storage.local.set({ commandHistory: [] }).then(() => sendResponse({ ok: true }));
+    return true;
+  }
   const tabId = sender.tab?.id;
   if (typeof tabId !== "number") return undefined;
 
@@ -176,4 +230,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => closeConnection(tabId));
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (!alarm.name.startsWith(RECONNECT_ALARM_PREFIX)) return;
+  const tabId = Number(alarm.name.slice(RECONNECT_ALARM_PREFIX.length));
+  chrome.tabs
+    .get(tabId)
+    .then((tab) => connectTab(tabId, tab))
+    .catch(() => closeConnection(tabId));
+});
+chrome.storage.onChanged.addListener((changes) => {
+  if (
+    !changes.bridgeUrl &&
+    !changes.bridgeToken &&
+    !changes.whitelistEnabled &&
+    !changes.whitelistOrigins
+  )
+    return;
+  for (const [tabId, connection] of connections) {
+    connection.socket?.close(1000, "Settings changed");
+    chrome.tabs
+      .get(tabId)
+      .then((tab) => connectTab(tabId, tab))
+      .catch(() => closeConnection(tabId));
+  }
+});
 chrome.runtime.onInstalled.addListener(() => chrome.runtime.openOptionsPage());

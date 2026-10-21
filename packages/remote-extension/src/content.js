@@ -10,6 +10,12 @@ function backendNodeIdFor(element) {
   return id;
 }
 
+function pruneBackendNodes() {
+  for (const [id, element] of nodesById) {
+    if (!element.isConnected) nodesById.delete(id);
+  }
+}
+
 function elementByBackendNodeId(value) {
   const element = nodesById.get(Number(value));
   if (!element?.isConnected) throw new Error(`DOM node not found: ${value}`);
@@ -42,6 +48,16 @@ function nameFor(element) {
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
     if (element.placeholder) return element.placeholder;
   }
+  const role = roleFor(element);
+  if (role === "generic" || role === "none" || role === "presentation") {
+    return Array.from(element.childNodes)
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent || "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 2000);
+  }
   return (element instanceof HTMLElement ? element.innerText : "")
     .replace(/\s+/g, " ")
     .trim()
@@ -61,8 +77,11 @@ function propertiesFor(element) {
 }
 
 function accessibilityTree() {
+  pruneBackendNodes();
   const nodes = [];
+  const maxNodes = 3000;
   const visit = (element, level) => {
+    if (nodes.length >= maxNodes) return [];
     if (
       !(element instanceof Element) ||
       element.hasAttribute("hidden") ||
@@ -504,7 +523,14 @@ function send(message) {
   chrome.runtime.sendMessage({ type: "agent_message", message });
 }
 
+let bridgeReady = false;
+
 chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "bridge_ready") {
+    bridgeReady = true;
+    announce();
+    return;
+  }
   if (message?.type !== "bridge_message") return;
   const request = message.message;
   if (request.type === "hello_ack") return;
@@ -523,6 +549,7 @@ chrome.runtime.onMessage.addListener((message) => {
 
 function announce() {
   chrome.runtime.sendMessage({ type: "content_ready" });
+  if (!bridgeReady) return;
   send({
     type: "page_event",
     method: "Page.frameNavigated",

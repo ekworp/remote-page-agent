@@ -14,6 +14,12 @@ Content Security Policy.
 3. Choose **Load unpacked** and select this directory.
 4. Open the extension's **Options** page and set the bridge URL and token.
 
-The first version supports page information, DOM summaries, accessibility
-snapshots, basic DOM queries, and fixed click/fill operations. More commands
-will be added as they are moved from `remote-userscript`.
+The extension supports page information, DOM summaries, accessibility
+snapshots, DOM queries, page navigation, fixed click/input operations, origin
+whitelists, command history, and English/Chinese settings. The popup replaces
+the userscript's floating status panel.
+
+The background uses `chrome.storage` for settings and history, `chrome.tabs`
+for tab lifecycle and new pages, and `chrome.alarms` for reconnect scheduling.
+DOM actions stay in the content script because they must run in the page's
+document.

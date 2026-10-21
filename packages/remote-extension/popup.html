@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Remote Page Agent</title>
+    <style>
+      body { margin: 0; padding: 14px; width: 320px; font: 13px system-ui, sans-serif; }
+      h1 { font-size: 16px; margin: 0 0 10px; }
+      button { padding: 5px 9px; }
+      #connections { margin: 8px 0; }
+      #history { list-style: none; margin: 8px 0; max-height: 220px; overflow: auto; padding: 0; }
+      #history li { border-bottom: 1px solid #ddd; padding: 4px 0; }
+      .muted { color: #666; }
+      .success { color: #16803c; }
+      .error { color: #b42318; }
+    </style>
+  </head>
+  <body>
+    <h1 data-i18n="title">Remote Page Agent</h1>
+    <div id="connections" class="muted"></div>
+    <button id="options" type="button" data-i18n="settings">Settings</button>
+    <button id="clear" type="button" data-i18n="clear">Clear history</button>
+    <h2 data-i18n="history">Command history</h2>
+    <ul id="history"></ul>
+    <script src="src/popup.js"></script>
+  </body>
+</html>

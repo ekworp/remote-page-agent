@@ -13,19 +13,25 @@
     </style>
   </head>
   <body>
-    <h1>Remote Page Agent</h1>
+    <h1 data-i18n="title">Remote Page Agent</h1>
     <form id="settings">
-      <label>Bridge WebSocket URL
+      <label><span data-i18n="bridgeUrl">Bridge WebSocket URL</span>
         <input id="bridgeUrl" type="url" required placeholder="ws://localhost:9222/agent">
       </label>
-      <label>Connection token
+      <label><span data-i18n="token">Connection token</span>
         <input id="bridgeToken" type="password" autocomplete="off">
       </label>
-      <label><input id="whitelistEnabled" type="checkbox"> Only connect on allowed origins</label>
-      <label>Allowed origins, one per line
+      <label><input id="whitelistEnabled" type="checkbox"> <span data-i18n="whitelistEnabled">Only connect on allowed origins</span></label>
+      <label><span data-i18n="whitelistOrigins">Allowed origins, one per line</span>
         <textarea id="whitelistOrigins" placeholder="https://example.com"></textarea>
       </label>
-      <button type="submit">Save</button><span id="status" role="status"></span>
+      <label><span data-i18n="language">Interface language</span>
+        <select id="language"><option value="auto">Auto</option><option value="en">English</option><option value="zh">中文</option></select>
+      </label>
+      <label><span data-i18n="historyLimit">Maximum history entries</span>
+        <input id="commandHistoryLimit" type="number" min="1" max="200" step="1">
+      </label>
+      <button type="submit" data-i18n="save">Save</button><span id="status" role="status"></span>
     </form>
     <script src="src/options.js"></script>
   </body>
