@@ -117,10 +117,14 @@ const translations: Record<string, Record<Language, string>> = {
     en: "Remote Page Agent disconnected; automatic reconnect stopped",
   },
   reconnectAttempt: {
-    zh: "将在 {{seconds}} 秒后重连（第 {{attempt}}/6 次）",
-    en: "Reconnect attempt {{attempt}}/6 in {{seconds}}s",
+    zh: "将在 {{seconds}} 秒后重连（第 {{attempt}} 次）",
+    en: "Reconnect attempt {{attempt}} in {{seconds}}s",
   },
   connectionError: { zh: "Remote Page Agent 连接错误", en: "Remote Page Agent connection error" },
+  offline: {
+    zh: "网络不可用，等待网络恢复后重连",
+    en: "Network unavailable; waiting to reconnect",
+  },
 };
 
 function getLanguagePreference(): LanguagePreference {
@@ -1936,7 +1940,8 @@ async function execute(request: AgentRequest): Promise<void> {
 
 function connect(): void {
   const bridgeUrl = getBridgeUrl();
-  if (!bridgeUrl || autoReconnectDisabled || !pageHasWhitelistAccess()) {
+  if (!bridgeUrl || autoReconnectDisabled || !pageHasWhitelistAccess() || !navigator.onLine) {
+    if (!navigator.onLine) showNotice(translate("offline"), "info");
     if (whitelistEnabled() && !pageHasWhitelistAccess()) {
       showNotice(translate("notWhitelisted"), "info");
     }
@@ -2001,6 +2006,10 @@ function connect(): void {
   currentSocket.addEventListener("close", () => {
     if (socket === currentSocket) showNotice(translate("disconnected"), "error");
     if (socket !== currentSocket || !getBridgeUrl() || autoReconnectDisabled) return;
+    if (!navigator.onLine) {
+      showNotice(translate("offline"), "info");
+      return;
+    }
     reconnectAttempt += 1;
     const delay = Math.min(60_000, 1000 * 2 ** Math.min(reconnectAttempt - 1, 6));
     const jitter = Math.round(delay * (0.8 + Math.random() * 0.4));
@@ -2023,6 +2032,7 @@ function connect(): void {
 
 function reconnectWhenPageIsActive(): void {
   if (document.visibilityState === "hidden") return;
+  if (!navigator.onLine) return;
   if (!getBridgeUrl() || autoReconnectDisabled) return;
   if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return;
   if (reconnectTimer !== undefined) {
@@ -2035,6 +2045,26 @@ function reconnectWhenPageIsActive(): void {
 document.addEventListener("visibilitychange", reconnectWhenPageIsActive);
 window.addEventListener("pageshow", reconnectWhenPageIsActive);
 window.addEventListener("focus", reconnectWhenPageIsActive);
+window.addEventListener("offline", () => {
+  if (reconnectTimer !== undefined) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
+  const currentSocket = socket;
+  socket = undefined;
+  currentSocket?.close(1000, "Network unavailable");
+  showNotice(translate("offline"), "info");
+});
+window.addEventListener("online", () => {
+  reconnectAttempt = 0;
+  if (!getBridgeUrl() || autoReconnectDisabled || !pageHasWhitelistAccess()) return;
+  if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return;
+  if (reconnectTimer !== undefined) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
+  connect();
+});
 
 window.addEventListener("load", () => {
   pageEvent("Page.loadEventFired", { timestamp: Date.now() / 1000 });
