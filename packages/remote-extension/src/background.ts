@@ -21,6 +21,30 @@ type BridgeMessage = {
 const connections = new Map<number, TabConnection>();
 let browserIdPromise: Promise<string> | undefined;
 
+async function updateActionStatus() {
+  const count = Array.from(connections.values()).filter(
+    (connection) => connection.connected,
+  ).length;
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const activeConnection =
+    typeof activeTab?.id === "number" ? connections.get(activeTab.id) : undefined;
+  const badgeText = activeConnection?.connected ? "✓" : activeConnection ? "…" : "";
+  const badgeColor = activeConnection?.connected
+    ? "#16845b"
+    : activeConnection
+      ? "#b7791f"
+      : "#68758a";
+  void chrome.action.setBadgeText({ text: badgeText });
+  void chrome.action.setBadgeBackgroundColor({ color: badgeColor });
+  void chrome.action.setTitle({
+    title: activeConnection?.connected
+      ? `网页操盘手：当前页面已连接（共 ${count} 个页面）`
+      : activeConnection
+        ? "网页操盘手：当前页面连接中"
+        : "网页操盘手：当前页面未连接",
+  });
+}
+
 async function ensureOffscreenDocument() {
   const offscreenUrl = chrome.runtime.getURL("offscreen.html");
   const runtime = chrome.runtime as typeof chrome.runtime & {
@@ -113,6 +137,7 @@ function closeConnection(tabId) {
   connection.closedByExtension = true;
   void sendToOffscreen({ type: "disconnect_bridge", tabId }).catch(() => {});
   connections.delete(tabId);
+  updateActionStatus();
 }
 
 async function connectTab(tabId, tab) {
@@ -142,6 +167,7 @@ async function connectTab(tabId, tab) {
     connected: false,
   };
   connections.set(tabId, connection);
+  updateActionStatus();
   await sendToOffscreen({
     type: "connect_bridge",
     tabId,
@@ -190,6 +216,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           when: Date.now() + delay,
         });
       }
+      updateActionStatus();
     }
     return false;
   }
@@ -268,6 +295,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => closeConnection(tabId));
+chrome.tabs.onActivated.addListener(() => updateActionStatus());
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+  if (changeInfo.status || changeInfo.url) updateActionStatus();
+});
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!alarm.name.startsWith(RECONNECT_ALARM_PREFIX)) return;
   const tabId = Number(alarm.name.slice(RECONNECT_ALARM_PREFIX.length));
@@ -300,3 +331,4 @@ chrome.storage.onChanged.addListener((changes) => {
   });
 });
 chrome.runtime.onInstalled.addListener(() => chrome.runtime.openOptionsPage());
+updateActionStatus();

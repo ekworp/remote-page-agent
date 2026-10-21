@@ -1,0 +1,26 @@
+// Bootstrap is imported by component so the extension only ships the styles it uses.
+@import "bootstrap/scss/functions";
+@import "bootstrap/scss/variables";
+@import "bootstrap/scss/variables-dark";
+@import "bootstrap/scss/maps";
+@import "bootstrap/scss/mixins";
+@import "bootstrap/scss/root";
+@import "bootstrap/scss/reboot";
+@import "bootstrap/scss/containers";
+@import "bootstrap/scss/grid";
+@import "bootstrap/scss/card";
+@import "bootstrap/scss/forms";
+@import "bootstrap/scss/buttons";
+@import "bootstrap/scss/utilities";
+@import "bootstrap/scss/utilities/api";
+
+.options-shell {
+  padding: 28px 16px 40px;
+}
+
+@include media-breakpoint-up(md) {
+  .options-shell {
+    max-width: 760px;
+    padding: 40px 24px 56px;
+  }
+}

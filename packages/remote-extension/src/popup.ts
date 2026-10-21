@@ -7,6 +7,7 @@ const translations = {
     title: "Remote Page Agent",
     subtitle: "Remote browser control",
     settings: "Settings",
+    version: "Version",
     clear: "Clear history",
     history: "Command history",
     connectionStatus: "Connection status",
@@ -23,6 +24,7 @@ const translations = {
     title: "网页操盘手",
     subtitle: "远程控制浏览器页面",
     settings: "连接设置",
+    version: "版本",
     clear: "清空历史",
     history: "命令执行历史",
     connectionStatus: "连接状态",
@@ -47,6 +49,11 @@ function applyLanguage(value) {
   document.title = strings.title;
   document.querySelectorAll("[data-i18n]").forEach((element) => {
     element.textContent = strings[element.dataset.i18n];
+  });
+  document.querySelectorAll("[data-i18n-label]").forEach((element) => {
+    const label = strings[element.dataset.i18nLabel];
+    element.setAttribute("aria-label", label);
+    element.setAttribute("title", label);
   });
   return strings;
 }
@@ -83,6 +90,7 @@ function render(state) {
 }
 
 chrome.runtime.sendMessage({ type: "popup_state" }).then(render);
+document.querySelector("#version").textContent = chrome.runtime.getManifest().version;
 document
   .querySelector("#options")
   .addEventListener("click", () => chrome.runtime.openOptionsPage());
@@ -100,27 +108,45 @@ function showStatus(text) {
   }, 1800);
 }
 
-document.querySelector("#addCurrentOrigin").addEventListener("click", async () => {
+function activeOrigin(tab) {
+  try {
+    const url = new URL(tab?.url || "");
+    return /^https?:$/.test(url.protocol) ? url.origin : "";
+  } catch {
+    return "";
+  }
+}
+
+async function updateWhitelistButton() {
   const settings = await chrome.storage.local.get({ language: "auto" });
   const strings = translations[language(settings.language)];
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  let origin = "";
-  try {
-    const url = new URL(tab?.url || "");
-    if (/^https?:$/.test(url.protocol)) origin = url.origin;
-  } catch {
-    // The active tab may be a browser or extension page.
-  }
+  const origin = activeOrigin(tab);
+  const button = document.querySelector("#addCurrentOrigin");
+  const values = await chrome.storage.local.get({ whitelistOrigins: [] });
+  const origins = Array.isArray(values.whitelistOrigins) ? values.whitelistOrigins : [];
+  const allowed = Boolean(origin && origins.includes(origin));
+  button.disabled = !origin || allowed;
+  button.classList.toggle("allowed", allowed);
+  button.textContent = allowed ? strings.alreadyAdded : strings.addCurrentOrigin;
+  return { button, origin, origins, strings };
+}
+
+document.querySelector("#addCurrentOrigin").addEventListener("click", async () => {
+  const { button, origin, origins, strings } = await updateWhitelistButton();
   if (!origin) {
     showStatus(strings.noPage);
     return;
   }
-  const values = await chrome.storage.local.get({ whitelistOrigins: [] });
-  const origins = Array.isArray(values.whitelistOrigins) ? values.whitelistOrigins : [];
   if (origins.includes(origin)) {
     showStatus(strings.alreadyAdded);
     return;
   }
   await chrome.storage.local.set({ whitelistOrigins: [...origins, origin] });
+  button.disabled = true;
+  button.classList.add("allowed");
+  button.textContent = strings.alreadyAdded;
   showStatus(strings.originAdded);
 });
+
+updateWhitelistButton();

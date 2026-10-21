@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +9,7 @@ const distDir = join(packageDir, "dist");
 const extensionDir = join(distDir, "extension");
 const sourceAssetsDir = join(packageDir, "extension");
 const iconSourceDir = join(packageDir, "..", "..", "assets", "extension-icons");
+const bootstrapGearIcon = join(packageDir, "node_modules", "bootstrap-icons", "icons", "gear.svg");
 const output = join(distDir, `remote-page-agent-extension-v${packageJson.version}.zip`);
 const staging = mkdtempSync(join(packageDir, ".package-"));
 
@@ -16,6 +17,10 @@ try {
   mkdirSync(distDir, { recursive: true });
   cpSync(sourceAssetsDir, extensionDir, { recursive: true });
   cpSync(iconSourceDir, join(extensionDir, "icons"), { recursive: true });
+  const popupPath = join(extensionDir, "popup.html");
+  const popupHtml = readFileSync(popupPath, "utf8");
+  const gearIcon = readFileSync(bootstrapGearIcon, "utf8").trim();
+  writeFileSync(popupPath, popupHtml.replace("<!-- bootstrap-gear-icon -->", gearIcon));
   cpSync(extensionDir, staging, { recursive: true });
   execFileSync("zip", ["-qr", output, "."], { cwd: staging, stdio: "inherit" });
   console.log(`Created ${output}`);
