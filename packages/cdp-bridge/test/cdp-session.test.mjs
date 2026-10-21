@@ -179,7 +179,7 @@ test("CDP sessions receive execution contexts and evaluate functions", async (t)
   assert.equal(direct.result.value, '"Example"');
 });
 
-test("AX uid resolves to a DOM handle and click dispatches mouse events", async (t) => {
+test("AX uid resolves to a DOM handle and an ordinary link click navigates", async (t) => {
   const { port, version } = await startBridge(t);
   const agent = new WebSocket(`ws://127.0.0.1:${port}/agent`);
   t.after(() => agent.close());
@@ -220,8 +220,8 @@ test("AX uid resolves to a DOM handle and click dispatches mouse events", async 
                 backendDOMNodeId: 42,
                 backendNodeId: 42,
                 ignored: false,
-                role: { type: "role", value: "button" },
-                name: { type: "computedString", value: "Close" },
+                role: { type: "role", value: "link" },
+                name: { type: "computedString", value: "Next" },
                 properties: [],
                 childIds: [],
               },
@@ -239,10 +239,10 @@ test("AX uid resolves to a DOM handle and click dispatches mouse events", async 
               nodeId: 42,
               backendNodeId: 42,
               nodeType: 1,
-              nodeName: "BUTTON",
-              localName: "button",
+              nodeName: "A",
+              localName: "a",
               frameId: "page-1",
-              attributes: [],
+              attributes: ["href", "/after-click"],
             },
           }),
         );
@@ -283,7 +283,7 @@ test("AX uid resolves to a DOM handle and click dispatches mouse events", async 
       client_rects: [{ x: 10, y: 20, width: 100, height: 40 }],
       rect: { x: 10, y: 20, width: 100, height: 40 },
       document_size: { documentWidth: 390, documentHeight: 844 },
-      local_name: "button",
+      local_name: "a",
     };
     if (operation === "click") {
       clicks.push({ operation: "click", backendNodeId: message.payload.backendNodeId });
@@ -361,10 +361,10 @@ test("AX uid resolves to a DOM handle and click dispatches mouse events", async 
   assert.ok(contextEvent);
 
   const ax = await send("Accessibility.getFullAXTree", {}, sessionId);
-  const button = ax.nodes.find((node) => node.role?.value === "button");
-  assert.ok(button, "expected one button in the AX tree");
-  assert.equal(button.backendDOMNodeId, button.backendNodeId);
-  const backendNodeId = button.backendDOMNodeId;
+  const link = ax.nodes.find((node) => node.role?.value === "link");
+  assert.ok(link, "expected one link in the AX tree");
+  assert.equal(link.backendDOMNodeId, link.backendNodeId);
+  const backendNodeId = link.backendNodeId;
 
   const resolved = await send(
     "DOM.resolveNode",
@@ -480,6 +480,7 @@ test("generic AX nodes keep their backend handle through dynamic button clicks",
   t.after(() => agent.close());
   const operations = [];
   const evalCalls = [];
+  let expanded = false;
 
   agent.on("open", () => {
     agent.send(
@@ -523,8 +524,13 @@ test("generic AX nodes keep their backend handle through dynamic button clicks",
           backendNodeId: 78,
           ignored: false,
           role: { type: "role", value: "button" },
-          name: { type: "computedString", value: "Assets 4" },
-          properties: [],
+          name: {
+            type: "computedString",
+            value: expanded ? "Assets 4 expanded" : "Assets 4",
+          },
+          properties: expanded
+            ? [{ name: "expanded", value: { type: "boolean", value: true } }]
+            : [],
           childIds: [],
         },
       ]);
@@ -576,6 +582,7 @@ test("generic AX nodes keep their backend handle through dynamic button clicks",
       if (operation === "click") {
         // This is the result the userscript returns after resolving the
         // generic wrapper to its current button child.
+        expanded = true;
         reply({ clicked: true, scheduledClick: true, backendNodeId: 78, tagName: "button" });
         return;
       }
@@ -666,6 +673,14 @@ test("generic AX nodes keep their backend handle through dynamic button clicks",
   const clicked = await call("element => element.click()");
 
   assert.equal(clicked.result.value.backendNodeId, 78);
+  const expandedTree = await send("Accessibility.getFullAXTree", {}, sessionId);
+  const expandedButton = expandedTree.nodes.find((node) => node.role?.value === "button");
+  assert.equal(expandedButton.name.value, "Assets 4 expanded");
+  assert.equal(
+    expandedButton.properties.find((property) => property.name === "expanded").value.value,
+    true,
+    "the click response must not wait for the post-click state to settle",
+  );
   assert.deepEqual(
     operations.map((item) => item.operation),
     ["is_intersecting", "scroll_into_view", "stable_rects", "get_enabled", "click"],

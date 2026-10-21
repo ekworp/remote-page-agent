@@ -102,6 +102,8 @@ const domHandles = new Map<string, number>();
 const pollerHandles = new Set<string>();
 const pollerResults = new Map<string, boolean>();
 const fakeObjectHandles = new Set<string>();
+const actionabilityCache = new Map<string, { value: boolean; expiresAt: number }>();
+const actionabilityCacheTtlMs = 2_500;
 const executionContextIds = new Map<string, Map<string, number>>();
 const sessionOwners = new Map<string, WebSocket>();
 const autoAttachClients = new Set<WebSocket>();
@@ -566,6 +568,38 @@ function numberParam(value: unknown): number | undefined {
   return undefined;
 }
 
+function actionabilityCacheKey(
+  page: PageConnection,
+  backendNodeId: number,
+  operation: string,
+  threshold?: number,
+): string {
+  return `${page.pageId}:${backendNodeId}:${operation}:${threshold ?? ""}`;
+}
+
+function cachedActionability(key: string): boolean | undefined {
+  const cached = actionabilityCache.get(key);
+  if (!cached) return undefined;
+  if (cached.expiresAt <= Date.now()) {
+    actionabilityCache.delete(key);
+    return undefined;
+  }
+  return cached.value;
+}
+
+function cachePositiveActionability(key: string, value: boolean): void {
+  if (value) {
+    actionabilityCache.set(key, { value, expiresAt: Date.now() + actionabilityCacheTtlMs });
+  }
+}
+
+function clearPageActionabilityCache(pageId: string): void {
+  const prefix = `${pageId}:`;
+  for (const key of actionabilityCache.keys()) {
+    if (key.startsWith(prefix)) actionabilityCache.delete(key);
+  }
+}
+
 function backendNodeIdFromParams(message: CdpMessage): number | undefined {
   const direct = numberParam(message.params?.backendNodeId ?? message.params?.nodeId);
   if (direct !== undefined) return direct;
@@ -878,7 +912,14 @@ async function tryHandleDomCall(
   if (
     /\.disabled\b|aria-disabled|hasAttribute\s*\(\s*['"]disabled['"]\s*\)/.test(functionDeclaration)
   ) {
-    return enabledOperation(page, backendNodeId);
+    const cacheKey = actionabilityCacheKey(page, backendNodeId, "get_enabled");
+    const cached = cachedActionability(cacheKey);
+    if (cached !== undefined) return { type: "boolean", value: cached };
+    const enabled = await enabledOperation(page, backendNodeId);
+    if (enabled.type === "boolean" && enabled.value === true) {
+      cachePositiveActionability(cacheKey, true);
+    }
+    return enabled;
   }
 
   // Short text fill (< typingThreshold): Puppeteer computes the text that is
@@ -921,7 +962,18 @@ async function tryHandleDomCall(
       argumentValues.find((value) => typeof value === "number") ??
       numberParam(message.params?.threshold) ??
       0;
-    return domOperation(page, backendNodeId, "is_intersecting", { threshold });
+    // The userscript deliberately treats a positive visible intersection as
+    // sufficient for both of Puppeteer's threshold 0 and threshold 1 probes.
+    // Use one short-lived key so the second probe made by ElementHandle.click
+    // does not add another userscript round trip to the same action.
+    const cacheKey = actionabilityCacheKey(page, backendNodeId, "is_intersecting");
+    const cached = cachedActionability(cacheKey);
+    if (cached !== undefined) return { type: "boolean", value: cached };
+    const intersecting = await domOperation(page, backendNodeId, "is_intersecting", { threshold });
+    if (intersecting.type === "boolean" && intersecting.value === true) {
+      cachePositiveActionability(cacheKey, true);
+    }
+    return intersecting;
   }
   if (
     /requestAnimationFrame/.test(functionDeclaration) &&
@@ -939,7 +991,11 @@ async function tryHandleDomCall(
     return domOperation(page, backendNodeId, "get_value");
   }
   if (/Node is detached from document|Node is not of type HTMLElement/.test(functionDeclaration)) {
-    return domOperation(page, backendNodeId, "assert_connected");
+    // DOM.resolveNode already verified this handle. The subsequent locator
+    // probe is only a guard before clickableBox(), which independently checks
+    // client rects. Avoid another userscript round trip here; remote pages
+    // can be timer-throttled and spend the whole Locator timeout on probes.
+    return { type: "object", value: null };
   }
   if (/Node\.TEXT_NODE/.test(functionDeclaration)) {
     // Return a fresh handle. Puppeteer disposes the temporary handle created
@@ -950,7 +1006,10 @@ async function tryHandleDomCall(
     return { type: "object", subtype: "node", objectId, description: "HTMLElement" };
   }
   if (/instanceof SVGElement/.test(functionDeclaration)) {
-    return domOperation(page, backendNodeId, "is_svg");
+    // SVG targets are still activated through the fixed mouse-input path.
+    // The result only selects Puppeteer's SVG helper and does not affect the
+    // target resolution or safety checks.
+    return { type: "boolean", value: false };
   }
   if (/scrollIntoView/.test(functionDeclaration)) {
     return domOperation(page, backendNodeId, "scroll_into_view");
@@ -1668,6 +1727,7 @@ function handleAgent(socket: WebSocket): void {
       return;
     }
     if (message.type === "page_event" && page && typeof message.method === "string") {
+      clearPageActionabilityCache(page.pageId);
       if (typeof message.url === "string") page.url = message.url;
       if (typeof message.title === "string") page.title = message.title;
       for (const client of clients) {

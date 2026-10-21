@@ -1240,17 +1240,37 @@ function hasLayoutBox(element: Element): boolean {
   return rect.width > 0 && rect.height > 0;
 }
 
-function intersectionRatio(element: Element): number {
-  if (!hasLayoutBox(element)) return 0;
+/**
+ * Some framework links use `display: contents`, and some controls expose
+ * their box through a child (for example an SVG icon or a text span). They
+ * are still valid activation targets even though the element returned by the
+ * accessibility tree has no non-empty box of its own.
+ */
+function isVisible(element: Element): boolean {
+  if (!element.isConnected) return false;
+  if (hasLayoutBox(element)) return true;
+  if (!isClickableElement(element)) return false;
+  return Array.from(element.children).some((child) => isVisible(child));
+}
 
-  const rect = element.getBoundingClientRect();
+function layoutElement(element: Element): Element | undefined {
+  if (hasLayoutBox(element)) return element;
+  if (!isClickableElement(element)) return undefined;
+  return Array.from(element.children).map(layoutElement).find(Boolean);
+}
+
+function intersectionRatio(element: Element): number {
+  const layoutTarget = layoutElement(element);
+  if (!layoutTarget) return 0;
+
+  const rect = layoutTarget.getBoundingClientRect();
   const viewportWidth = Math.max(document.documentElement?.clientWidth ?? 0, window.innerWidth);
   const viewportHeight = Math.max(document.documentElement?.clientHeight ?? 0, window.innerHeight);
   let left = Math.max(rect.left, 0);
   let top = Math.max(rect.top, 0);
   let right = Math.min(rect.right, viewportWidth);
   let bottom = Math.min(rect.bottom, viewportHeight);
-  let current = element.parentElement;
+  let current = layoutTarget.parentElement;
 
   // IntersectionObserver also accounts for clipping by nested scroll
   // containers. Apply the same clipping before calculating the ratio so a
@@ -1320,10 +1340,10 @@ function resolveClickTarget(element: Element): Element {
     current = current.parentElement;
   }
 
-  if (isClickableElement(element) && hasLayoutBox(element)) return element;
+  if (isClickableElement(element) && isVisible(element)) return element;
 
   for (const candidate of ancestry.slice(1)) {
-    if (isClickableElement(candidate) && hasLayoutBox(candidate)) return candidate;
+    if (isClickableElement(candidate) && isVisible(candidate)) return candidate;
   }
 
   const descendant = Array.from(element.querySelectorAll(clickableSelector)).find((candidate) =>
@@ -1379,7 +1399,7 @@ function prepareClickTarget(element: Element): Element {
   if (!element.isConnected) throw new Error("Element is detached from document");
 
   let target = resolveClickTarget(element);
-  if (!hasLayoutBox(target)) throw new Error("Element is not visible");
+  if (!isVisible(target)) throw new Error("Element is not visible");
   if (isElementDisabled(target)) throw new Error("Element is disabled");
 
   immediateScrollIntoView(target);
@@ -1388,28 +1408,27 @@ function prepareClickTarget(element: Element): Element {
   // target once more so a generic wrapper uses the current child element.
   if (!element.isConnected) throw new Error("Element was detached from document");
   target = resolveClickTarget(element);
-  if (!hasLayoutBox(target)) throw new Error("Element is not visible");
+  if (!isVisible(target)) throw new Error("Element is not visible");
   if (isElementDisabled(target)) throw new Error("Element is disabled");
   return target;
 }
 
-function scheduleElementClick(element: Element, eventInit: MouseEventInit = {}): void {
-  window.setTimeout(() => {
-    if (!element.isConnected) return;
+function clickMayNavigate(target: Element): boolean {
+  const anchor = target.closest("a[href]");
+  if (anchor instanceof HTMLAnchorElement) return true;
+  if (target instanceof HTMLButtonElement || target instanceof HTMLInputElement) {
+    return target instanceof HTMLButtonElement
+      ? target.type === "submit" && target.form !== null
+      : target.type === "submit" || target.type === "image";
+  }
+  return false;
+}
 
-    const target = resolveClickTarget(element);
-    if (!hasLayoutBox(target) || isElementDisabled(target)) return;
-    try {
-      immediateScrollIntoView(target);
-    } catch {
-      return;
-    }
-    if (!target.isConnected) return;
-
-    if (target instanceof HTMLElement) {
-      target.click();
-      return;
-    }
+function dispatchElementClick(element: Element, eventInit: MouseEventInit = {}): Element {
+  const target = prepareClickTarget(element);
+  if (target instanceof HTMLElement) {
+    target.click();
+  } else {
     target.dispatchEvent(
       new MouseEvent("click", {
         bubbles: true,
@@ -1418,6 +1437,24 @@ function scheduleElementClick(element: Element, eventInit: MouseEventInit = {}):
         buttons: 0,
       }),
     );
+  }
+  return target;
+}
+
+function scheduleElementClick(element: Element, eventInit: MouseEventInit = {}): void {
+  window.setTimeout(() => {
+    if (!element.isConnected) return;
+
+    const target = resolveClickTarget(element);
+    if (!isVisible(target) || isElementDisabled(target)) return;
+    try {
+      immediateScrollIntoView(target);
+    } catch {
+      return;
+    }
+    if (!target.isConnected) return;
+
+    dispatchElementClick(target, eventInit);
   }, 0);
 }
 
@@ -1653,10 +1690,13 @@ function domOperation(
     case "click": {
       const target = prepareClickTarget(element);
       const anchor = target.closest("a[href]");
-      scheduleElementClick(element);
+      const scheduled = clickMayNavigate(target);
+      if (scheduled) scheduleElementClick(element);
+      else dispatchElementClick(target);
       return {
         clicked: true,
-        scheduledClick: true,
+        scheduledClick: scheduled,
+        dispatched: !scheduled,
         navigationHint:
           anchor instanceof HTMLAnchorElement
             ? anchor.target === "_blank"
@@ -1688,7 +1728,14 @@ function domOperation(
         ? Math.max(0, Math.min(1, requestedThreshold))
         : 0;
       const ratio = intersectionRatio(clickTarget);
-      return threshold === 1 ? ratio >= 1 - 1e-6 : ratio > threshold;
+      // Puppeteer's actionability probe uses threshold 1 before clicking, but
+      // a fixed header, a nested scroller, or a framework layout update can
+      // leave a few pixels clipped even after scrollIntoView(). The click
+      // point is still valid as long as a positive portion of the target is
+      // visible. Requiring a mathematically complete intersection here can
+      // make Locator.click() time out after the page has already handled the
+      // activation.
+      return threshold === 1 ? ratio > 0 : ratio > threshold;
     }
     case "assert_connected":
       if (!element.isConnected) return "Node is detached from document";
@@ -1874,15 +1921,23 @@ function dispatchInput(payload: Record<string, unknown>): Record<string, unknown
           ? "popup"
           : "navigation"
         : undefined;
-    // Send the CDP response before activating the element. A navigation or
-    // target="_blank" popup can destroy this document immediately; doing
-    // click() synchronously would race the WebSocket response and leave the
-    // MCP tool waiting for a dead page.
-    scheduleElementClick(clickTarget, {
-      ...mouseInit,
-      detail: Number(payload.clickCount ?? 1),
-    });
-    return { ...result, scheduledClick: true, navigationHint };
+    const scheduled = clickMayNavigate(clickTarget);
+    // Navigation-capable targets must be activated after the response so a
+    // document teardown cannot race the WebSocket reply. Non-navigation
+    // controls are activated synchronously, so the reply acknowledges an
+    // event that was actually dispatched rather than merely queued.
+    if (scheduled) {
+      scheduleElementClick(clickTarget, {
+        ...mouseInit,
+        detail: Number(payload.clickCount ?? 1),
+      });
+    } else {
+      dispatchElementClick(clickTarget, {
+        ...mouseInit,
+        detail: Number(payload.clickCount ?? 1),
+      });
+    }
+    return { ...result, scheduledClick: scheduled, dispatched: !scheduled, navigationHint };
   }
   if (type === "mouseWheel") {
     element.dispatchEvent(
@@ -1911,10 +1966,13 @@ async function execute(request: AgentRequest): Promise<void> {
       {
         const element = selector(payload);
         const target = prepareClickTarget(element);
-        scheduleElementClick(element);
+        const scheduled = clickMayNavigate(target);
+        if (scheduled) scheduleElementClick(element);
+        else dispatchElementClick(target);
         response(request.id, {
           clicked: true,
-          scheduledClick: true,
+          scheduledClick: scheduled,
+          dispatched: !scheduled,
           ...describeElement(target),
         });
       }
@@ -1927,10 +1985,13 @@ async function execute(request: AgentRequest): Promise<void> {
       );
       if (!(element instanceof Element)) throw new Error(`text not found: ${text}`);
       const target = prepareClickTarget(element);
-      scheduleElementClick(element);
+      const scheduled = clickMayNavigate(target);
+      if (scheduled) scheduleElementClick(element);
+      else dispatchElementClick(target);
       response(request.id, {
         clicked: true,
-        scheduledClick: true,
+        scheduledClick: scheduled,
+        dispatched: !scheduled,
         text,
         ...describeElement(target),
       });
@@ -2021,10 +2082,13 @@ async function execute(request: AgentRequest): Promise<void> {
       const element = elementByBackendNodeId(backendNodeId);
       if (!element) throw new Error("DOM node not found");
       const target = prepareClickTarget(element);
-      scheduleElementClick(element);
+      const scheduled = clickMayNavigate(target);
+      if (scheduled) scheduleElementClick(element);
+      else dispatchElementClick(target);
       response(request.id, {
         clicked: true,
-        scheduledClick: true,
+        scheduledClick: scheduled,
+        dispatched: !scheduled,
         backendNodeId,
         ...describeElement(target),
       });
