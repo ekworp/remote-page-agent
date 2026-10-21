@@ -938,13 +938,11 @@ function accessibilityName(element: Element): string {
   // enormous duplicate names. Semantic elements still use rendered text.
   const role = accessibilityRole(element);
   const directText = normalizeAccessibilityName(directTextContent(element), 2000);
-  const renderedText = element instanceof HTMLElement ? element.innerText : "";
-  const text = normalizeAccessibilityName(renderedText || element.textContent || "");
   if (role === "generic" || role === "none") {
     if (directText) return directText;
-    return text.length <= 80 ? text : "";
+    return "";
   }
-  return text;
+  return normalizeAccessibilityName(element instanceof HTMLElement ? element.innerText : "");
 }
 
 function normalizeAccessibilityName(value: string, maxLength = 500): string {
@@ -975,7 +973,75 @@ function isHiddenFromAccessibilityTree(element: Element): boolean {
 }
 
 function isTransparentAccessibilityNode(role: string, name: string): boolean {
-  return !name && (role === "generic" || role === "none");
+  return !name && (role === "generic" || role === "none" || role === "presentation");
+}
+
+function hasInteractiveDescendant(element: Element): boolean {
+  return Boolean(
+    element.querySelector(
+      'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [tabindex], [contenteditable="true"]',
+    ),
+  );
+}
+
+function isDecorativeAccessibilityElement(element: Element, role: string, name: string): boolean {
+  if (name || role !== "generic" || !(element instanceof SVGElement)) return false;
+  if (hasInteractiveDescendant(element)) return false;
+  return (
+    element.getAttribute("aria-hidden") === "true" ||
+    element.getAttribute("role") === "presentation"
+  );
+}
+
+function accessibilityProperties(element: Element): unknown[] {
+  const properties: unknown[] = [];
+  const add = (name: string, value: string | boolean | number): void => {
+    properties.push({
+      name,
+      value: {
+        type: typeof value === "boolean" ? "boolean" : typeof value,
+        value,
+      },
+    });
+  };
+  const ariaDisabled = element.getAttribute("aria-disabled");
+  const ariaExpanded = element.getAttribute("aria-expanded");
+  const ariaChecked = element.getAttribute("aria-checked");
+  const ariaSelected = element.getAttribute("aria-selected");
+
+  if (ariaDisabled === "true") add("disabled", true);
+  if (ariaExpanded === "true" || ariaExpanded === "false") {
+    add("expanded", ariaExpanded === "true");
+  }
+  if (ariaChecked === "true" || ariaChecked === "false") {
+    add("checked", ariaChecked === "true");
+  }
+  if (ariaSelected === "true" || ariaSelected === "false") {
+    add("selected", ariaSelected === "true");
+  }
+  if (element instanceof HTMLAnchorElement && element.href) add("url", element.href);
+  if (element instanceof HTMLHeadingElement) add("level", Number(element.tagName.slice(1)));
+
+  if (
+    element instanceof HTMLButtonElement ||
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement
+  ) {
+    if (element.disabled) add("disabled", true);
+  }
+  if (element instanceof HTMLInputElement) {
+    if (element.type === "checkbox" || element.type === "radio") add("checked", element.checked);
+    if (element.type !== "password" && element.value) add("value", element.value);
+  } else if (element instanceof HTMLTextAreaElement && element.value) {
+    add("value", element.value);
+  } else if (element instanceof HTMLSelectElement && element.value) {
+    add("value", element.value);
+  } else if (element instanceof HTMLOptionElement && element.selected) {
+    add("selected", true);
+  }
+  if (element instanceof HTMLElement && element.tabIndex >= 0) add("focusable", true);
+  return properties;
 }
 
 function accessibilityTree(depth = 32): AccessibilityNode[] {
@@ -990,6 +1056,7 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
     const children: string[] = [];
     const name = accessibilityName(element);
     const role = accessibilityRole(element);
+    if (isDecorativeAccessibilityElement(element, role, name)) return [];
     if (level < depth) {
       for (const child of Array.from(element.children)) {
         if (nodes.length >= maxNodes) break;
@@ -1010,7 +1077,7 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
       backendNodeId,
       ignored: false,
       role: { type: "role", value: role },
-      properties: [],
+      properties: accessibilityProperties(element),
       childIds: children,
     };
     if (name) node.name = { type: "computedString", value: name };
