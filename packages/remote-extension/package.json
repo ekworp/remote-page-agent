@@ -4,8 +4,7 @@
   "version": "0.3.1",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "package": "pnpm build && node scripts/package.mjs",
+    "build": "node scripts/clean.mjs && tsc && node scripts/package.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

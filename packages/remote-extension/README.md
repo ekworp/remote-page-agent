@@ -9,25 +9,21 @@ Content Security Policy.
 
 ## Load locally
 
-Build the extension first:
+Build the extension and create its ZIP package:
 
 ```bash
 pnpm --filter @remote-page-agent/remote-extension build
 ```
 
-Create a distributable ZIP package:
-
-```bash
-pnpm --filter @remote-page-agent/remote-extension package
-```
-
-The package is written to `artifacts/remote-page-agent-extension-v*.zip`.
+Compiled JavaScript and copied extension files are written to `dist/extension/`,
+which can be loaded directly as an unpacked extension. The ZIP package is
+written alongside it under `dist/` as `remote-page-agent-extension-v*.zip`.
 
 Then:
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
-3. Choose **Load unpacked** and select this directory.
+3. Choose **Load unpacked** and select `dist/extension/`.
 4. Open the extension's **Options** page and set the bridge URL and token.
 
 The extension supports page information, DOM summaries, accessibility
@@ -39,3 +35,9 @@ The background uses `chrome.storage` for settings and history, `chrome.tabs`
 for tab lifecycle and new pages, and `chrome.alarms` for reconnect scheduling.
 DOM actions stay in the content script because they must run in the page's
 document.
+
+The bridge WebSocket is owned by an MV3 offscreen document rather than the
+service worker. This keeps the connection alive when the service worker is
+suspended. The offscreen document sends a heartbeat every 20 seconds and
+reconnects with exponential backoff; the service worker remains a routing and
+lifecycle fallback.

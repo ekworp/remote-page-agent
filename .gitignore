@@ -1,6 +1,5 @@
 node_modules/
 packages/*/dist/
-packages/remote-extension/artifacts/
 *.tsbuildinfo
 .env
 .env.*

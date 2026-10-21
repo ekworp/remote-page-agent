@@ -3,16 +3,16 @@
   "name": "网页操盘手 | Remote Page Agent",
   "version": "0.3.1",
   "description": "Let AI remotely control browser pages through a CDP bridge.",
-  "permissions": ["alarms", "storage", "tabs"],
+  "permissions": ["alarms", "offscreen", "storage", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": {
-    "service_worker": "dist/background.js",
+    "service_worker": "background.js",
     "type": "module"
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["dist/content.js"],
+      "js": ["content.js"],
       "run_at": "document_start"
     }
   ],

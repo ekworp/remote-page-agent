@@ -5,7 +5,7 @@
     "moduleResolution": "Bundler",
     "strict": false,
     "noEmitOnError": true,
-    "outDir": "dist",
+    "outDir": "dist/extension",
     "rootDir": "src",
     "skipLibCheck": true,
     "lib": ["ES2022", "DOM"]

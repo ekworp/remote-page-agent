@@ -1,3 +1,5 @@
+export {};
+
 const DEFAULT_BRIDGE_URL = "ws://localhost:9222/agent";
 const RECONNECT_ALARM_PREFIX = "remote-page-agent-reconnect:";
 type TabConnection = {
@@ -5,7 +7,7 @@ type TabConnection = {
   pageId: string;
   attempt: number;
   closedByExtension: boolean;
-  socket?: WebSocket;
+  connected: boolean;
   retryTimer?: number;
 };
 type BridgeMessage = {
@@ -18,6 +20,30 @@ type BridgeMessage = {
 
 const connections = new Map<number, TabConnection>();
 let browserIdPromise: Promise<string> | undefined;
+
+async function ensureOffscreenDocument() {
+  const offscreenUrl = chrome.runtime.getURL("offscreen.html");
+  const runtime = chrome.runtime as typeof chrome.runtime & {
+    getContexts: (filter: {
+      contextTypes: string[];
+      documentUrls: string[];
+    }) => Promise<Array<{ contextType: string }>>;
+  };
+  const contexts = await runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [offscreenUrl],
+  });
+  if (contexts.length > 0) return;
+  await chrome.offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: ["WORKERS" as chrome.offscreen.Reason],
+    justification: "Maintain bridge WebSocket connections independently of the MV3 service worker.",
+  });
+}
+
+function sendToOffscreen(message) {
+  return ensureOffscreenDocument().then(() => chrome.runtime.sendMessage(message));
+}
 
 function getBrowserId() {
   if (!browserIdPromise) {
@@ -76,7 +102,7 @@ async function popupState() {
     connections: Array.from(connections.values()).map((connection) => ({
       tabId: connection.tabId,
       pageId: connection.pageId,
-      connected: connection.socket?.readyState === WebSocket.OPEN,
+      connected: connection.connected,
     })),
   };
 }
@@ -85,16 +111,13 @@ function closeConnection(tabId) {
   const connection = connections.get(tabId);
   if (!connection) return;
   connection.closedByExtension = true;
-  connection.socket?.close(1000, "Tab closed");
+  void sendToOffscreen({ type: "disconnect_bridge", tabId }).catch(() => {});
   connections.delete(tabId);
 }
 
 async function connectTab(tabId, tab) {
   let connection = connections.get(tabId);
-  if (
-    connection?.socket?.readyState === WebSocket.OPEN ||
-    connection?.socket?.readyState === WebSocket.CONNECTING
-  ) {
+  if (connection?.connected) {
     return;
   }
 
@@ -116,59 +139,25 @@ async function connectTab(tabId, tab) {
     pageId: connection?.pageId || crypto.randomUUID(),
     attempt: connection?.attempt || 0,
     closedByExtension: false,
+    connected: false,
   };
   connections.set(tabId, connection);
-
-  const socket = new WebSocket(settings.bridgeUrl);
-  connection.socket = socket;
-  socket.addEventListener("open", async () => {
-    connection.attempt = 0;
-    socket.send(
-      JSON.stringify({
-        type: "hello",
-        browserId: await getBrowserId(),
-        pageId: connection.pageId,
-        token: settings.bridgeToken,
-        url: tab?.url || "about:blank",
-        title: tab?.title || "Remote Page",
-      }),
-    );
-  });
-  socket.addEventListener("message", async (event) => {
-    let message: BridgeMessage;
-    try {
-      message = JSON.parse(String(event.data)) as BridgeMessage;
-    } catch {
-      return;
-    }
-    if (message.type === "hello_ack" && typeof message.pageId === "string") {
-      connection.pageId = message.pageId;
-      try {
-        await chrome.tabs.sendMessage(tabId, { type: "bridge_ready" });
-      } catch {
-        // The tab can still be loading its content script.
-      }
-    }
-    if (typeof message.id === "string" && typeof message.type === "string") {
-      void recordHistory(message.id, message.type, "pending");
-    }
-    try {
-      await chrome.tabs.sendMessage(tabId, { type: "bridge_message", message });
-    } catch {
-      // The tab can be between documents while navigation is in progress.
-    }
-  });
-  socket.addEventListener("close", () => {
-    if (connections.get(tabId)?.socket !== socket || connection.closedByExtension) return;
-    connection.attempt += 1;
-    const delay = Math.min(60_000, 1000 * 2 ** Math.min(connection.attempt - 1, 6));
-    chrome.alarms.create(`${RECONNECT_ALARM_PREFIX}${tabId}`, { when: Date.now() + delay });
+  await sendToOffscreen({
+    type: "connect_bridge",
+    tabId,
+    pageId: connection.pageId,
+    settings: {
+      bridgeUrl: settings.bridgeUrl,
+      bridgeToken: settings.bridgeToken,
+    },
+    browserId: await getBrowserId(),
+    url: tab?.url || "about:blank",
+    title: tab?.title || "Remote Page",
   });
 }
 
 function sendToBridge(tabId, message) {
-  const socket = connections.get(tabId)?.socket;
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  void sendToOffscreen({ type: "bridge_message", tabId, message }).catch(() => {});
   if (typeof message?.id === "string" && typeof message?.type === "string") {
     void recordHistory(
       message.id,
@@ -186,6 +175,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "clear_history") {
     chrome.storage.local.set({ commandHistory: [] }).then(() => sendResponse({ ok: true }));
     return true;
+  }
+  if (message?.type === "offscreen_bridge_status") {
+    const connection = connections.get(message.tabId);
+    if (connection) {
+      connection.connected = message.status === "connected";
+      if (message.status === "connected") {
+        connection.attempt = 0;
+      }
+      if (message.status === "disconnected" && !connection.closedByExtension) {
+        connection.attempt += 1;
+        const delay = Math.min(60_000, 1000 * 2 ** Math.min(connection.attempt - 1, 6));
+        chrome.alarms.create(`${RECONNECT_ALARM_PREFIX}${message.tabId}`, {
+          when: Date.now() + delay,
+        });
+      }
+    }
+    return false;
+  }
+  if (message?.type === "offscreen_bridge_message") {
+    const connection = connections.get(message.tabId);
+    if (!connection) return false;
+    const bridgeMessage = message.message as BridgeMessage;
+    if (bridgeMessage.type === "hello_ack" && typeof bridgeMessage.pageId === "string") {
+      connection.pageId = bridgeMessage.pageId;
+      void chrome.tabs.sendMessage(message.tabId, { type: "bridge_ready" }).catch(() => {});
+    }
+    if (typeof bridgeMessage.id === "string" && typeof bridgeMessage.type === "string") {
+      void recordHistory(bridgeMessage.id, bridgeMessage.type, "pending");
+    }
+    void chrome.tabs
+      .sendMessage(message.tabId, { type: "bridge_message", message: bridgeMessage })
+      .catch(() => {});
+    return false;
   }
   const tabId = sender.tab?.id;
   if (typeof tabId !== "number") return undefined;
@@ -263,7 +285,8 @@ chrome.storage.onChanged.addListener((changes) => {
   )
     return;
   for (const [tabId, connection] of connections) {
-    connection.socket?.close(1000, "Settings changed");
+    connection.connected = false;
+    void sendToOffscreen({ type: "disconnect_bridge", tabId }).catch(() => {});
     chrome.tabs
       .get(tabId)
       .then((tab) => connectTab(tabId, tab))
