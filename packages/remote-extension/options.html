@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Remote Page Agent settings</title>
+    <style>
+      body { max-width: 640px; margin: 32px auto; font: 16px system-ui, sans-serif; }
+      label { display: block; margin: 16px 0; }
+      input { box-sizing: border-box; display: block; margin-top: 6px; padding: 8px; width: 100%; }
+      button { padding: 8px 16px; }
+      #status { margin-left: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Remote Page Agent</h1>
+    <form id="settings">
+      <label>Bridge WebSocket URL
+        <input id="bridgeUrl" type="url" required placeholder="ws://localhost:9222/agent">
+      </label>
+      <label>Connection token
+        <input id="bridgeToken" type="password" autocomplete="off">
+      </label>
+      <button type="submit">Save</button><span id="status" role="status"></span>
+    </form>
+    <script src="src/options.js"></script>
+  </body>
+</html>

@@ -40,13 +40,14 @@ This is an early prototype. Do not expose it directly to the public internet.
 | Token authentication | ✅ Complete | Supports a shared connection token. |
 | WSS, origin checks, and fine-grained permissions | ❌ Not implemented | The current version should not be exposed directly to the public internet. |
 | Full Chrome DevTools Protocol | ❌ Not implemented | Only the subset needed by Puppeteer/MCP is implemented. |
-| Browser extension version | ❌ Not implemented | The project still uses a userscript; the migration plan is in `docs/userscript-to-extension.md`. |
+| Browser extension version | ⚠️ Early implementation | A Chromium Manifest V3 version is available in `packages/remote-extension`; more commands still need to be moved over. |
 
 ## Project layout
 
 ```text
 packages/
 ├── remote-userscript/  # Runs in the mobile browser
+├── remote-extension/   # Chromium Manifest V3 extension
 └── cdp-bridge/         # WebSocket server and CDP adapter
 docs/                   # Protocol and migration notes
 ```

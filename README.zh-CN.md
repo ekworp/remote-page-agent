@@ -40,13 +40,14 @@ Remote Page Agent 让 AI 通过油猴脚本连接手机浏览器中的网页。�
 | Token 认证 | ✅ 已实现 | 支持共享连接密码。 |
 | WSS、来源校验和细粒度权限 | ❌ 未实现 | 当前版本不适合直接暴露到公网。 |
 | 完整 Chrome DevTools Protocol | ❌ 未实现 | 当前只实现 Puppeteer/MCP 所需的有限子集。 |
-| 浏览器扩展版本 | ❌ 未实现 | 当前仍使用油猴脚本，扩展迁移记录在 `docs/userscript-to-extension.md`。 |
+| 浏览器扩展版本 | ⚠️ 初步实现 | `packages/remote-extension` 中已有 Chromium Manifest V3 版本，仍需继续迁移更多命令。 |
 
 ## 项目结构
 
 ```text
 packages/
 ├── remote-userscript/  # 在手机浏览器中运行
+├── remote-extension/   # Chromium Manifest V3 扩展
 └── cdp-bridge/         # WebSocket 服务和 CDP 适配器
 docs/                   # 协议和迁移说明
 ```
@@ -87,4 +88,4 @@ http://server-address:9222
 
 - `docs/message-protocol.md`：油猴脚本与桥接服务的消息格式。
 - `docs/implementation-plan.md`：计划中的实现阶段。
-- `docs/userscript-to-extension.md`：未来迁移到浏览器扩展的说明。
+- `docs/userscript-to-extension.md`：浏览器扩展迁移说明。
