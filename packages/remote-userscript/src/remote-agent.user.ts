@@ -1050,6 +1050,7 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
   const nodes: AccessibilityNode[] = [];
   const nodesById = new Map<string, AccessibilityNode>();
   const visit = (element: Element, level: number): string[] => {
+    if (element.closest("[data-remote-page-agent]")) return [];
     if (isHiddenFromAccessibilityTree(element) || nodes.length >= maxNodes) return [];
     const backendNodeId = backendNodeIdFor(element);
     const nodeId = String(backendNodeId);

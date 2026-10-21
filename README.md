@@ -2,21 +2,45 @@
 
 ![Remote Page Agent](assets/remote-page-agent.svg)
 
-Remote Page Agent connects an agent to a page in a mobile browser. A userscript runs in the page and communicates with a small Node.js bridge over WebSocket. The bridge provides a limited CDP endpoint, so existing CDP clients can connect without enabling Chrome remote debugging on the phone.
+[English](README.md) · [中文](README.zh-CN.md)
+
+Remote Page Agent lets an agent control pages in a mobile browser. A userscript runs in each page and communicates with a small Node.js bridge over WebSocket. The bridge exposes a limited CDP endpoint, so CDP clients can connect without enabling Chrome remote debugging on the phone.
 
 This is an early prototype. Do not expose it directly to the public internet.
 
 ## Features
 
-- Connect several pages from the same browser
-- Keep a browser ID and a separate page ID for each connection
+- Connect multiple pages from the same browser
+- Assign a browser ID and a separate page ID to each connection
 - Read page information and console messages
 - Find elements with CSS selectors
-- Click, type, scroll, and navigate
+- Click, type, scroll, and navigate pages
 - Restrict automatic connections with an origin whitelist
-- Configure the floating button opacity and command history size
-- Run limited page-side JavaScript
+- Configure the floating button opacity and command history length
+- Run a limited set of page-side JavaScript commands
 - Expose connected pages through `/json/list` and a small CDP WebSocket API
+
+## Feature status
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Userscript connection to mobile pages | ✅ Complete | Connects to the Node.js bridge over WebSocket. |
+| Multiple pages and page IDs | ✅ Mostly complete | Keeps separate browser and page IDs and preserves pages during brief disconnects. |
+| WebSocket heartbeat | ✅ Complete | The bridge sends a protocol-level `ping` every 30 seconds to detect dead connections. |
+| Automatic reconnect | ✅ Mostly complete | Uses exponential backoff, jitter, network recovery, and foreground reconnects. |
+| Long-running background use | ⚠️ Known limitation | The connection can still be interrupted when the mobile OS freezes or kills the browser. |
+| Reconnect after navigation | ✅ Complete | Restores the same logical page after a reload or navigation. |
+| Page text, links, and page information | ✅ Complete | Supports DOM summaries and fixed page information commands. |
+| Accessibility Snapshot | ✅ Complete | Includes roles, names, URLs, states, and interaction properties. Coverage is smaller than full CDP. |
+| Snapshot compaction | ✅ Complete | Folds layout nodes and removes clearly decorative SVGs while preserving interactive descendants. |
+| Click, type, scroll, and navigation | ⚠️ Compatibility issues remain | Works on ordinary pages; some clicks on dynamic pages such as GitHub still need work. |
+| Console messages | ✅ Complete | Forwards page events through the limited CDP interface. |
+| Restricted page-side JavaScript | ⚠️ Intentionally limited | Allows fixed commands and a small expression allowlist, not arbitrary JavaScript. |
+| Origin whitelist | ✅ Complete | Limits which pages may connect automatically. |
+| Token authentication | ✅ Complete | Supports a shared connection token. |
+| WSS, origin checks, and fine-grained permissions | ❌ Not implemented | The current version should not be exposed directly to the public internet. |
+| Full Chrome DevTools Protocol | ❌ Not implemented | Only the subset needed by Puppeteer/MCP is implemented. |
+| Browser extension version | ❌ Not implemented | The project still uses a userscript; the migration plan is in `docs/userscript-to-extension.md`. |
 
 ## Project layout
 
@@ -64,66 +88,3 @@ The bridge supports an optional shared token. It still uses plain WebSocket conn
 - `docs/message-protocol.md` describes the userscript/bridge message format.
 - `docs/implementation-plan.md` records the planned phases.
 - `docs/userscript-to-extension.md` describes the future extension migration.
-
-## 中文说明
-
-Remote Page Agent 通过油猴脚本连接手机浏览器中的网页。脚本通过 WebSocket 与 Node.js 桥接服务通信，桥接服务提供有限的 CDP 接口，因此不需要在手机浏览器上开启 Chrome 远程调试。
-
-当前可以：
-
-- 连接同一浏览器中的多个页面
-- 为浏览器和每个页面维护独立标识
-- 读取页面信息和控制台消息
-- 使用 CSS 选择器查找元素
-- 点击、输入、滚动和导航
-- 执行受限的页面 JavaScript
-- 通过 origin 白名单限制自动连接页面
-- 在油猴脚本中配置悬浮按钮透明度和命令历史条数
-- 通过 `/json/list` 和简化的 CDP WebSocket API 暴露页面
-
-### 项目结构
-
-```text
-packages/
-├── remote-userscript/  # 在手机浏览器中运行
-└── cdp-bridge/         # WebSocket 服务和 CDP 适配器
-docs/                   # 协议和迁移说明
-```
-
-### 本地运行
-
-需要 Node.js 20 或更高版本，以及 pnpm。
-
-```bash
-pnpm install
-pnpm build
-pnpm check
-pnpm --filter @remote-page-agent/cdp-bridge start
-```
-
-桥接服务默认监听 `9222` 端口。要让同一局域网中的手机连接，可以这样启动：
-
-```bash
-HOST=0.0.0.0 PUBLIC_HOST=192.168.1.10 \
-  pnpm --filter @remote-page-agent/cdp-bridge start
-```
-
-将 `packages/remote-userscript/dist/remote-agent.user.js` 安装到 Tampermonkey 或其他油猴脚本管理器中，然后从脚本菜单打开 **连接设置**。默认地址是 `ws://localhost:9222/agent`。如果桥接服务运行在其他设备上，请将 `localhost` 替换为该设备的局域网地址。
-
-桥接地址、浏览器标识和其他设置由油猴脚本管理器保存，不写入页面的 `localStorage`。同一脚本安装下的不同页面和域名共享这些设置，但每个页面仍使用独立的连接和页面标识。
-
-将 MCP 客户端配置为使用桥接服务的 CDP 地址：
-
-```text
-http://server-address:9222
-```
-
-### 安全说明
-
-桥接服务支持可选的共享令牌，但目前仍使用普通 WebSocket，并允许有限的 JavaScript 评估，因此请只在可信网络中使用。如果需要在私有网络之外运行，应启用令牌，并增加 WSS、来源校验、命令权限、超时和更严格的脚本执行限制。默认不要发送密码、Cookie 或其他敏感页面数据。
-
-### 更多说明
-
-- `docs/message-protocol.md`：油猴脚本与桥接服务的消息格式。
-- `docs/implementation-plan.md`：计划中的实现阶段。
-- `docs/userscript-to-extension.md`：未来迁移到浏览器扩展的说明。
