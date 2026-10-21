@@ -1,0 +1,11 @@
+{
+  "extName": {
+    "message": "Remote Page Agent"
+  },
+  "extDescription": {
+    "message": "Let AI remotely control browser pages through a CDP bridge."
+  },
+  "actionTitle": {
+    "message": "Remote Page Agent settings"
+  }
+}

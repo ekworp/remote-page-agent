@@ -1,0 +1,11 @@
+{
+  "extName": {
+    "message": "网页操盘手"
+  },
+  "extDescription": {
+    "message": "通过 CDP 桥接服务，让 AI 远程控制浏览器页面。"
+  },
+  "actionTitle": {
+    "message": "网页操盘手设置"
+  }
+}

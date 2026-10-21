@@ -292,5 +292,11 @@ chrome.storage.onChanged.addListener((changes) => {
       .then((tab) => connectTab(tabId, tab))
       .catch(() => closeConnection(tabId));
   }
+  chrome.tabs.query({}).then((tabs) => {
+    for (const tab of tabs) {
+      if (typeof tab.id !== "number" || !/^https?:/i.test(tab.url || "")) continue;
+      void connectTab(tab.id, tab).catch(() => {});
+    }
+  });
 });
 chrome.runtime.onInstalled.addListener(() => chrome.runtime.openOptionsPage());

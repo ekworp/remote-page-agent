@@ -2,26 +2,61 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>Remote Page Agent</title>
+    <meta name="color-scheme" content="light dark">
+    <title>网页操盘手</title>
+    <link rel="stylesheet" href="styles.css">
     <style>
-      body { margin: 0; padding: 14px; width: 320px; font: 13px system-ui, sans-serif; }
-      h1 { font-size: 16px; margin: 0 0 10px; }
-      button { padding: 5px 9px; }
-      #connections { margin: 8px 0; }
-      #history { list-style: none; margin: 8px 0; max-height: 220px; overflow: auto; padding: 0; }
-      #history li { border-bottom: 1px solid #ddd; padding: 4px 0; }
-      .muted { color: #666; }
-      .success { color: #16803c; }
-      .error { color: #b42318; }
+      body { width: 360px; margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .shell { padding: 18px; }
+      .header { display: flex; align-items: center; gap: 11px; margin-bottom: 16px; }
+      .logo { width: 38px; height: 38px; border-radius: 11px; box-shadow: 0 4px 12px rgb(30 50 90 / 18%); }
+      h1 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+      .subtitle { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+      .status-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); }
+      .status-label { color: var(--muted); font-size: 12px; }
+      #connections { margin-top: 2px; font-weight: 700; }
+      .online { color: var(--success); }
+      .offline { color: var(--muted); }
+      .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 16%, transparent); }
+      .dot.offline { background: var(--muted); box-shadow: none; }
+      .quick-action { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0; padding: 14px; border-radius: 14px; background: var(--accent-soft); }
+      .quick-action strong { display: block; color: var(--text); }
+      .quick-action small { display: block; margin-top: 2px; color: var(--muted); }
+      button { border-radius: 9px; padding: 9px 12px; font-size: 12px; white-space: nowrap; }
+      button.secondary { background: var(--card); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); }
+      .section-title { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 8px; }
+      h2 { margin: 0; font-size: 14px; }
+      #history { list-style: none; max-height: 205px; overflow: auto; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+      #history li { display: flex; justify-content: space-between; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--border); overflow: hidden; }
+      #history li:last-child { border-bottom: 0; }
+      #history .command { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #history .time { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+      .muted { color: var(--muted); }
+      .success { color: var(--success); }
+      .error { color: var(--danger); }
+      .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+      #status { min-height: 18px; margin-top: 6px; color: var(--success); text-align: right; font-size: 12px; }
     </style>
   </head>
   <body>
-    <h1 data-i18n="title">Remote Page Agent</h1>
-    <div id="connections" class="muted"></div>
-    <button id="options" type="button" data-i18n="settings">Settings</button>
-    <button id="clear" type="button" data-i18n="clear">Clear history</button>
-    <h2 data-i18n="history">Command history</h2>
-    <ul id="history"></ul>
+    <main class="shell">
+      <header class="header">
+        <img class="logo" src="icons/icon128.png" alt="">
+        <div><h1 data-i18n="title">网页操盘手</h1><p class="subtitle" data-i18n="subtitle">Remote browser control</p></div>
+      </header>
+      <section class="status-card">
+        <div><div class="status-label" data-i18n="connectionStatus">Connection status</div><div id="connections" class="offline"></div></div>
+        <span id="statusDot" class="dot offline" aria-hidden="true"></span>
+      </section>
+      <section class="quick-action">
+        <div><strong data-i18n="whitelistAction">Allow this page</strong><small data-i18n="whitelistHint">Add the active page to the whitelist.</small></div>
+        <button id="addCurrentOrigin" type="button" data-i18n="addCurrentOrigin">Add page</button>
+      </section>
+      <div id="status" role="status" aria-live="polite"></div>
+      <div class="section-title"><h2 data-i18n="history">Command history</h2><button id="clear" class="secondary" type="button" data-i18n="clear">Clear</button></div>
+      <ul id="history"></ul>
+      <footer class="footer"><button id="options" class="secondary" type="button" data-i18n="settings">Settings</button></footer>
+    </main>
     <script type="module" src="popup.js"></script>
   </body>
 </html>

@@ -12,18 +12,33 @@ const defaults = {
 };
 const translations = {
   en: {
-    title: "Remote Page Agent",
+    title: "Remote Page Agent settings",
+    intro: "Configure the bridge connection and the pages it can access.",
+    connectionSection: "Connection",
+    connectionDescription: "Set the WebSocket bridge used by the extension.",
+    accessSection: "Page access",
+    accessDescription: "Limit connections to the origins listed below.",
+    preferencesSection: "Preferences",
     bridgeUrl: "Bridge WebSocket URL",
     token: "Connection token",
     whitelistEnabled: "Only connect on allowed origins",
     whitelistOrigins: "Allowed origins, one per line",
     language: "Interface language",
     historyLimit: "Maximum history entries",
-    save: "Save",
+    save: "Save settings",
     saved: "Saved",
+    originAdded: "Origin added",
+    noPage: "No web page found in the active window",
+    invalidPage: "The active page has no valid web origin",
   },
   zh: {
-    title: "Remote Page Agent",
+    title: "网页操盘手设置",
+    intro: "设置中转服务器地址，并管理可访问的网页。",
+    connectionSection: "连接设置",
+    connectionDescription: "设置扩展使用的 WebSocket 桥接地址。",
+    accessSection: "页面访问",
+    accessDescription: "限制扩展只连接下面列出的网页来源。",
+    preferencesSection: "偏好设置",
     bridgeUrl: "Bridge WebSocket 地址",
     token: "连接密码",
     whitelistEnabled: "只连接白名单中的页面",
@@ -32,6 +47,9 @@ const translations = {
     historyLimit: "最多保留历史条数",
     save: "保存",
     saved: "已保存",
+    originAdded: "已加入来源",
+    noPage: "当前窗口没有找到网页",
+    invalidPage: "当前页面没有有效的网页来源",
   },
 };
 const form = document.querySelector("#settings");
@@ -43,6 +61,18 @@ const language = document.querySelector("#language");
 const commandHistoryLimit = document.querySelector("#commandHistoryLimit");
 const status = document.querySelector("#status");
 
+function selectedLanguage() {
+  return language.value === "zh" || language.value === "en"
+    ? language.value
+    : navigator.language.toLowerCase().startsWith("zh")
+      ? "zh"
+      : "en";
+}
+
+function message(key) {
+  return translations[selectedLanguage()][key];
+}
+
 function applyLanguage(value) {
   const selected =
     value === "zh" || value === "en"
@@ -51,6 +81,7 @@ function applyLanguage(value) {
         ? "zh"
         : "en";
   const strings = translations[selected];
+  document.title = strings.title;
   document.querySelectorAll("[data-i18n]").forEach((element) => {
     element.textContent = strings[element.dataset.i18n];
   });
@@ -68,21 +99,33 @@ chrome.storage.local.get(defaults).then((values) => {
 
 language.addEventListener("change", () => applyLanguage(language.value));
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
+function originList() {
+  return whitelistOrigins.value
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+async function saveSettings() {
   await chrome.storage.local.set({
     bridgeUrl: bridgeUrl.value.trim(),
     bridgeToken: bridgeToken.value.trim(),
     whitelistEnabled: whitelistEnabled.checked,
-    whitelistOrigins: whitelistOrigins.value
-      .split(/\r?\n/)
-      .map((value) => value.trim())
-      .filter(Boolean),
+    whitelistOrigins: originList(),
     language: language.value,
     commandHistoryLimit: Math.max(1, Math.min(200, Number(commandHistoryLimit.value) || 50)),
   });
-  status.textContent = translations[language.value === "zh" ? "zh" : "en"].saved;
+}
+
+function showStatus(text) {
+  status.textContent = text;
   setTimeout(() => {
     status.textContent = "";
   }, 1500);
+}
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await saveSettings();
+  showStatus(message("saved"));
 });
