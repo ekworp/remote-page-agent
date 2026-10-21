@@ -34,3 +34,9 @@ textarea,
 select {
   color: var(--text);
 }
+
+.card {
+  background: var(--card);
+  color: var(--text);
+  border-color: var(--border);
+}

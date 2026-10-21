@@ -13,12 +13,10 @@ const translations = {
     connectionStatus: "Connection status",
     connected: "Connected tabs: ",
     empty: "No commands",
-    whitelistAction: "Allow this page",
-    whitelistHint: "Add the active page to the whitelist.",
-    addCurrentOrigin: "Add page",
+    addCurrentOrigin: "Add current page",
     originAdded: "Page origin added",
     alreadyAdded: "Page origin is already allowed",
-    noPage: "No web page is active",
+    noPage: "Current page unavailable",
   },
   zh: {
     title: "网页操盘手",
@@ -30,12 +28,10 @@ const translations = {
     connectionStatus: "连接状态",
     connected: "已连接页面：",
     empty: "暂无命令",
-    whitelistAction: "允许当前页面",
-    whitelistHint: "将当前页面加入白名单。",
-    addCurrentOrigin: "加入页面",
+    addCurrentOrigin: "加入当前页面",
     originAdded: "已加入页面来源",
-    alreadyAdded: "该页面来源已经允许",
-    noPage: "当前没有活动网页",
+    alreadyAdded: "当前页面已允许",
+    noPage: "当前页面不可用",
   },
 };
 
@@ -128,7 +124,12 @@ async function updateWhitelistButton() {
   const allowed = Boolean(origin && origins.includes(origin));
   button.disabled = !origin || allowed;
   button.classList.toggle("allowed", allowed);
-  button.textContent = allowed ? strings.alreadyAdded : strings.addCurrentOrigin;
+  button.classList.toggle("unavailable", !origin);
+  button.textContent = !origin
+    ? strings.noPage
+    : allowed
+      ? strings.alreadyAdded
+      : strings.addCurrentOrigin;
   return { button, origin, origins, strings };
 }
 
