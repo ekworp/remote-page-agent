@@ -701,10 +701,7 @@ async function enabledOperation(
   page: PageConnection,
   backendNodeId: number,
 ): Promise<Record<string, unknown>> {
-  const node = await getDomNodeInfo(page, backendNodeId);
-  const disabled =
-    node?.attributes.has("disabled") || node?.attributes.get("aria-disabled") === "true";
-  return { type: "boolean", value: !disabled };
+  return getEnabledOperation(page, backendNodeId);
 }
 
 async function fillOperation(
@@ -878,7 +875,9 @@ async function tryHandleDomCall(
   // Locator actionability probes disabled controls before clicking. Resolve
   // that fixed property query through DOM attributes so generic cards and
   // framework-managed containers do not time out in the poller.
-  if (/\.disabled\b|aria-disabled/.test(functionDeclaration)) {
+  if (
+    /\.disabled\b|aria-disabled|hasAttribute\s*\(\s*['"]disabled['"]\s*\)/.test(functionDeclaration)
+  ) {
     return enabledOperation(page, backendNodeId);
   }
 

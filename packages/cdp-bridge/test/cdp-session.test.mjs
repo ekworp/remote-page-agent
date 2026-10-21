@@ -474,6 +474,206 @@ test("AX uid resolves to a DOM handle and click dispatches mouse events", async 
   assert.equal(targets.targetInfos[0].url, "https://example.com/after-click");
 });
 
+test("generic AX nodes keep their backend handle through dynamic button clicks", async (t) => {
+  const { port, version } = await startBridge(t);
+  const agent = new WebSocket(`ws://127.0.0.1:${port}/agent`);
+  t.after(() => agent.close());
+  const operations = [];
+  const evalCalls = [];
+
+  agent.on("open", () => {
+    agent.send(
+      JSON.stringify({
+        type: "hello",
+        browserId: "browser-1",
+        pageId: "generic-page",
+        url: "https://github.example/releases",
+        title: "Releases",
+      }),
+    );
+  });
+  agent.on("message", (raw) => {
+    const message = JSON.parse(String(raw));
+    const reply = (result) => agent.send(JSON.stringify({ id: message.id, ok: true, result }));
+
+    if (message.type === "get_accessibility_tree") {
+      reply([
+        {
+          nodeId: "root",
+          backendDOMNodeId: 0,
+          backendNodeId: 0,
+          ignored: false,
+          role: { type: "role", value: "RootWebArea" },
+          properties: [],
+          childIds: ["77"],
+        },
+        {
+          nodeId: "77",
+          backendDOMNodeId: 77,
+          backendNodeId: 77,
+          ignored: false,
+          role: { type: "role", value: "generic" },
+          name: { type: "computedString", value: "Assets 4" },
+          properties: [],
+          childIds: ["78"],
+        },
+        {
+          nodeId: "78",
+          backendDOMNodeId: 78,
+          backendNodeId: 78,
+          ignored: false,
+          role: { type: "role", value: "button" },
+          name: { type: "computedString", value: "Assets 4" },
+          properties: [],
+          childIds: [],
+        },
+      ]);
+      return;
+    }
+    if (message.type === "get_dom_node") {
+      const backendNodeId = Number(message.payload?.backendNodeId);
+      reply({
+        nodeId: backendNodeId,
+        backendNodeId,
+        nodeType: 1,
+        nodeName: backendNodeId === 78 ? "BUTTON" : "DIV",
+        localName: backendNodeId === 78 ? "button" : "div",
+        frameId: "generic-page",
+        attributes: [],
+      });
+      return;
+    }
+    if (message.type === "eval_safe") {
+      evalCalls.push(message.payload?.code);
+      agent.send(
+        JSON.stringify({
+          id: message.id,
+          ok: false,
+          error: { message: "dynamic evaluation is not allowed" },
+        }),
+      );
+      return;
+    }
+    if (message.type === "dom_operation") {
+      const backendNodeId = Number(message.payload?.backendNodeId);
+      const operation = message.payload?.operation;
+      operations.push({ operation, backendNodeId });
+      if (operation === "is_intersecting") {
+        reply(false);
+        return;
+      }
+      if (operation === "stable_rects") {
+        reply([
+          { x: 10, y: 20, width: 100, height: 40 },
+          { x: 10, y: 20, width: 100, height: 40 },
+        ]);
+        return;
+      }
+      if (operation === "get_enabled") {
+        reply(true);
+        return;
+      }
+      if (operation === "click") {
+        // This is the result the userscript returns after resolving the
+        // generic wrapper to its current button child.
+        reply({ clicked: true, scheduledClick: true, backendNodeId: 78, tagName: "button" });
+        return;
+      }
+      reply({ ok: true });
+      return;
+    }
+    reply({ ok: true });
+  });
+  await waitForOpen(agent);
+  await sleep(50);
+
+  const cdp = new WebSocket(version.webSocketDebuggerUrl);
+  t.after(() => cdp.close());
+  await waitForOpen(cdp);
+
+  let requestId = 0;
+  const responses = new Map();
+  const events = [];
+  cdp.on("message", (raw) => {
+    const message = JSON.parse(String(raw));
+    if (message.id) responses.set(message.id, message);
+    else events.push(message);
+  });
+  const send = (method, params = {}, sessionId) => {
+    requestId += 1;
+    const id = requestId;
+    cdp.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    return new Promise((resolve, reject) => {
+      const timer = setInterval(() => {
+        const response = responses.get(id);
+        if (!response) return;
+        clearInterval(timer);
+        if (response.error) reject(new Error(JSON.stringify(response.error)));
+        else resolve(response.result);
+      }, 5);
+    });
+  };
+
+  await send("Target.setAutoAttach", {
+    autoAttach: true,
+    waitForDebuggerOnStart: true,
+    flatten: true,
+    filter: [{}],
+  });
+  await sleep(50);
+  const attached = events.find((event) => event.method === "Target.attachedToTarget");
+  assert.ok(attached);
+  const sessionId = attached.params.sessionId;
+  await send("Runtime.enable", {}, sessionId);
+  const contextId = events.find(
+    (event) => event.method === "Runtime.executionContextCreated" && event.sessionId === sessionId,
+  ).params.context.id;
+
+  const ax = await send("Accessibility.getFullAXTree", {}, sessionId);
+  const generic = ax.nodes.find((node) => node.role?.value === "generic");
+  assert.equal(generic.backendNodeId, 77);
+  const resolved = await send(
+    "DOM.resolveNode",
+    { backendNodeId: generic.backendNodeId, executionContextId: contextId },
+    sessionId,
+  );
+  const objectId = resolved.object.objectId;
+  const call = (functionDeclaration, args = []) =>
+    send(
+      "Runtime.callFunctionOn",
+      {
+        functionDeclaration,
+        executionContextId: contextId,
+        arguments: [{ objectId }, ...args],
+        returnByValue: true,
+        awaitPromise: true,
+      },
+      sessionId,
+    );
+
+  const intersecting = await call(
+    "async (element, threshold) => { const observer = new IntersectionObserver(() => {}); observer.observe(element); return threshold; }",
+    [{ value: 0 }],
+  );
+  assert.equal(intersecting.result.value, false);
+  await call("element => element.scrollIntoView({ block: 'center' })");
+  await call(
+    "element => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(element.getBoundingClientRect()))))",
+  );
+  await call(
+    "element => { if (!(element instanceof HTMLElement)) return true; const isNativeFormControl = ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'OPTION', 'OPTGROUP'].includes(element.nodeName); return !isNativeFormControl || !element.hasAttribute('disabled'); }",
+  );
+  const clicked = await call("element => element.click()");
+
+  assert.equal(clicked.result.value.backendNodeId, 78);
+  assert.deepEqual(
+    operations.map((item) => item.operation),
+    ["is_intersecting", "scroll_into_view", "stable_rects", "get_enabled", "click"],
+  );
+  assert.ok(operations.every((item) => item.backendNodeId === 77));
+  assert.equal(evalCalls.length, 0, "generic clicks must use fixed DOM operations");
+});
+
 test("Puppeteer fill call shapes use fixed DOM input operations", async (t) => {
   const { port, version } = await startBridge(t);
   const agent = new WebSocket(`ws://127.0.0.1:${port}/agent`);

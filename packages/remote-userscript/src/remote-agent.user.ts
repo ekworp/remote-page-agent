@@ -1170,6 +1170,14 @@ const clickableSelector = [
   "a[href]",
   "button",
   "[role=button]",
+  "[role=link]",
+  "[role=checkbox]",
+  "[role=radio]",
+  "[role=switch]",
+  "[role=menuitem]",
+  "[role=option]",
+  "[role=tab]",
+  "[role=combobox]",
   "input",
   "select",
   "textarea",
@@ -1196,10 +1204,78 @@ function domRect(element: Element): DomRectSnapshot {
   return rectSnapshot(element.getBoundingClientRect());
 }
 
+function isElementDisabled(element: Element): boolean {
+  if (element.getAttribute("aria-disabled") === "true") return true;
+  if (
+    element instanceof HTMLButtonElement ||
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLOptionElement ||
+    element instanceof HTMLOptGroupElement
+  ) {
+    return element.disabled;
+  }
+  return false;
+}
+
 function hasLayoutBox(element: Element): boolean {
   if (!element.isConnected) return false;
+  if (element.getClientRects().length === 0) return false;
+
+  let current: Element | null = element;
+  while (current) {
+    const style = getComputedStyle(current);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.visibility === "collapse"
+    ) {
+      return false;
+    }
+    current = current.parentElement;
+  }
+
   const rect = element.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0;
+}
+
+function intersectionRatio(element: Element): number {
+  if (!hasLayoutBox(element)) return 0;
+
+  const rect = element.getBoundingClientRect();
+  const viewportWidth = Math.max(document.documentElement?.clientWidth ?? 0, window.innerWidth);
+  const viewportHeight = Math.max(document.documentElement?.clientHeight ?? 0, window.innerHeight);
+  let left = Math.max(rect.left, 0);
+  let top = Math.max(rect.top, 0);
+  let right = Math.min(rect.right, viewportWidth);
+  let bottom = Math.min(rect.bottom, viewportHeight);
+  let current = element.parentElement;
+
+  // IntersectionObserver also accounts for clipping by nested scroll
+  // containers. Apply the same clipping before calculating the ratio so a
+  // target hidden inside an overflow container is scrolled first.
+  while (current) {
+    const style = getComputedStyle(current);
+    const clipsX = /(auto|clip|hidden|overlay|scroll)/.test(style.overflowX);
+    const clipsY = /(auto|clip|hidden|overlay|scroll)/.test(style.overflowY);
+    if (clipsX || clipsY) {
+      const clip = current.getBoundingClientRect();
+      if (clipsX) {
+        left = Math.max(left, clip.left);
+        right = Math.min(right, clip.right);
+      }
+      if (clipsY) {
+        top = Math.max(top, clip.top);
+        bottom = Math.min(bottom, clip.bottom);
+      }
+    }
+    current = current.parentElement;
+  }
+
+  const visibleWidth = Math.max(0, right - left);
+  const visibleHeight = Math.max(0, bottom - top);
+  return (visibleWidth * visibleHeight) / (rect.width * rect.height);
 }
 
 function isClickableElement(element: Element): boolean {
@@ -1239,18 +1315,27 @@ function resolveClickTarget(element: Element): Element {
 
   const ancestry: Element[] = [];
   let current: Element | null = element;
-  while (current && ancestry.length < 12) {
+  while (current) {
     ancestry.push(current);
     current = current.parentElement;
   }
 
+  if (isClickableElement(element) && hasLayoutBox(element)) return element;
+
   for (const candidate of ancestry.slice(1)) {
     if (isClickableElement(candidate) && hasLayoutBox(candidate)) return candidate;
   }
-  if (hasLayoutBox(element)) return element;
 
-  const descendant = element.querySelector(clickableSelector);
-  if (descendant && hasLayoutBox(descendant)) return descendant;
+  const descendant = Array.from(element.querySelectorAll(clickableSelector)).find((candidate) =>
+    hasLayoutBox(candidate),
+  );
+  if (descendant) return descendant;
+
+  // A generic wrapper can itself be the target of a delegated listener even
+  // when it has no semantic role. Only use it after checking its actionable
+  // descendants, otherwise a button/link inside the wrapper never receives
+  // the activation.
+  if (hasLayoutBox(element)) return element;
 
   for (const candidate of ancestry) {
     if (hasLayoutBox(candidate)) return candidate;
@@ -1281,20 +1366,51 @@ function immediateScrollIntoView(element: Element): void {
     }
     current = current.parentElement;
   }
-  element.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
-  for (const { element: scrollable, previous } of changed) {
-    scrollable.style.scrollBehavior = previous;
+  try {
+    element.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+  } finally {
+    for (const { element: scrollable, previous } of changed) {
+      scrollable.style.scrollBehavior = previous;
+    }
   }
+}
+
+function prepareClickTarget(element: Element): Element {
+  if (!element.isConnected) throw new Error("Element is detached from document");
+
+  let target = resolveClickTarget(element);
+  if (!hasLayoutBox(target)) throw new Error("Element is not visible");
+  if (isElementDisabled(target)) throw new Error("Element is disabled");
+
+  immediateScrollIntoView(target);
+
+  // A scroll can trigger lazy rendering or a framework update. Resolve the
+  // target once more so a generic wrapper uses the current child element.
+  if (!element.isConnected) throw new Error("Element was detached from document");
+  target = resolveClickTarget(element);
+  if (!hasLayoutBox(target)) throw new Error("Element is not visible");
+  if (isElementDisabled(target)) throw new Error("Element is disabled");
+  return target;
 }
 
 function scheduleElementClick(element: Element, eventInit: MouseEventInit = {}): void {
   window.setTimeout(() => {
     if (!element.isConnected) return;
-    if (element instanceof HTMLElement) {
-      element.click();
+
+    const target = resolveClickTarget(element);
+    if (!hasLayoutBox(target) || isElementDisabled(target)) return;
+    try {
+      immediateScrollIntoView(target);
+    } catch {
       return;
     }
-    element.dispatchEvent(
+    if (!target.isConnected) return;
+
+    if (target instanceof HTMLElement) {
+      target.click();
+      return;
+    }
+    target.dispatchEvent(
       new MouseEvent("click", {
         bubbles: true,
         cancelable: true,
@@ -1535,8 +1651,9 @@ function domOperation(
   const editableTarget = resolveEditableTarget(element);
   switch (operation) {
     case "click": {
-      const anchor = clickTarget.closest("a[href]");
-      scheduleElementClick(clickTarget);
+      const target = prepareClickTarget(element);
+      const anchor = target.closest("a[href]");
+      scheduleElementClick(element);
       return {
         clicked: true,
         scheduledClick: true,
@@ -1546,7 +1663,7 @@ function domOperation(
               ? "popup"
               : "navigation"
             : undefined,
-        ...describeElement(clickTarget),
+        ...describeElement(target),
       };
     }
     case "rect":
@@ -1566,11 +1683,12 @@ function domOperation(
         window.setTimeout(finish, 250);
       });
     case "is_intersecting": {
-      const rect = clickTarget.getBoundingClientRect();
-      // Let Puppeteer's scrollIntoViewIfNeeded path handle viewport and
-      // nested-scroller visibility. Requiring intersection here makes
-      // off-screen media cards fail actionability before they can be scrolled.
-      return clickTarget.isConnected && rect.width > 0 && rect.height > 0;
+      const requestedThreshold = Number(payload.threshold ?? 0);
+      const threshold = Number.isFinite(requestedThreshold)
+        ? Math.max(0, Math.min(1, requestedThreshold))
+        : 0;
+      const ratio = intersectionRatio(clickTarget);
+      return threshold === 1 ? ratio >= 1 - 1e-6 : ratio > threshold;
     }
     case "assert_connected":
       if (!element.isConnected) return "Node is detached from document";
@@ -1587,16 +1705,8 @@ function domOperation(
     case "get_input_kind":
       return inputKind(editableTarget);
     case "get_enabled": {
-      const ariaDisabled = editableTarget.getAttribute("aria-disabled") === "true";
-      const disabled =
-        editableTarget instanceof HTMLInputElement ||
-        editableTarget instanceof HTMLButtonElement ||
-        editableTarget instanceof HTMLTextAreaElement ||
-        editableTarget instanceof HTMLSelectElement ||
-        editableTarget instanceof HTMLOptionElement
-          ? editableTarget.disabled
-          : false;
-      return !disabled && !ariaDisabled;
+      const actionTarget = isEditableElement(element) ? editableTarget : clickTarget;
+      return !isElementDisabled(actionTarget);
     }
     case "get_value":
       return currentEditableValue(editableTarget);
@@ -1687,7 +1797,7 @@ function dispatchInput(payload: Record<string, unknown>): Record<string, unknown
     (selectorValue ? document.querySelector(selectorValue) : null) ??
     (type.startsWith("key") || type === "char" ? document.activeElement : elementAtPoint(x, y));
   const element = hit ?? document.body;
-  if (!(element instanceof HTMLElement)) throw new Error("input target not found");
+  if (!(element instanceof Element)) throw new Error("input target not found");
   const clickTarget = resolveClickTarget(element);
   const buttonValue = payload.button;
   const button =
@@ -1798,8 +1908,16 @@ async function execute(request: AgentRequest): Promise<void> {
       return;
     }
     case "click":
-      scheduleElementClick(selector(payload));
-      response(request.id, { clicked: true, scheduledClick: true });
+      {
+        const element = selector(payload);
+        const target = prepareClickTarget(element);
+        scheduleElementClick(element);
+        response(request.id, {
+          clicked: true,
+          scheduledClick: true,
+          ...describeElement(target),
+        });
+      }
       return;
     case "click_text": {
       const text = typeof payload.text === "string" ? payload.text.trim() : "";
@@ -1807,11 +1925,15 @@ async function execute(request: AgentRequest): Promise<void> {
       const element = Array.from(document.querySelectorAll("body *")).find(
         (candidate) => candidate.textContent?.trim() === text,
       );
-      if (!(element instanceof HTMLElement)) throw new Error(`text not found: ${text}`);
-      const target = element.closest("a,button,[role=button]") ?? element;
-      if (!(target instanceof HTMLElement)) throw new Error("element is not clickable");
-      scheduleElementClick(target);
-      response(request.id, { clicked: true, scheduledClick: true, text });
+      if (!(element instanceof Element)) throw new Error(`text not found: ${text}`);
+      const target = prepareClickTarget(element);
+      scheduleElementClick(element);
+      response(request.id, {
+        clicked: true,
+        scheduledClick: true,
+        text,
+        ...describeElement(target),
+      });
       return;
     }
     case "input": {
@@ -1898,8 +2020,8 @@ async function execute(request: AgentRequest): Promise<void> {
       const backendNodeId = Number(payload.backendNodeId);
       const element = elementByBackendNodeId(backendNodeId);
       if (!element) throw new Error("DOM node not found");
-      const target = resolveClickTarget(element);
-      scheduleElementClick(target);
+      const target = prepareClickTarget(element);
+      scheduleElementClick(element);
       response(request.id, {
         clicked: true,
         scheduledClick: true,
