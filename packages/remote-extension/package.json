@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "package": "pnpm build && node scripts/package.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

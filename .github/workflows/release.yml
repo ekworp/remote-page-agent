@@ -35,6 +35,9 @@ jobs:
       - name: Build packages
         run: pnpm build
 
+      - name: Package browser extension
+        run: pnpm --filter @remote-page-agent/remote-extension package
+
       - name: Package release files
         run: |
           mkdir -p release
@@ -48,6 +51,7 @@ jobs:
             packages/cdp-bridge/package.json
           cp packages/remote-userscript/dist/remote-agent.user.js \
             release/remote-agent.user.js
+          cp packages/remote-extension/artifacts/*.zip release/
 
       - name: Create GitHub Release
         env:

@@ -15,6 +15,14 @@ Build the extension first:
 pnpm --filter @remote-page-agent/remote-extension build
 ```
 
+Create a distributable ZIP package:
+
+```bash
+pnpm --filter @remote-page-agent/remote-extension package
+```
+
+The package is written to `artifacts/remote-page-agent-extension-v*.zip`.
+
 Then:
 
 1. Open `chrome://extensions`.
