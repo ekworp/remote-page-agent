@@ -18,10 +18,14 @@ async function getSettings() {
   const values = await chrome.storage.local.get({
     bridgeUrl: DEFAULT_BRIDGE_URL,
     bridgeToken: "",
+    whitelistEnabled: false,
+    whitelistOrigins: [],
   });
   return {
     bridgeUrl: String(values.bridgeUrl || DEFAULT_BRIDGE_URL).trim(),
     bridgeToken: String(values.bridgeToken || "").trim(),
+    whitelistEnabled: Boolean(values.whitelistEnabled),
+    whitelistOrigins: Array.isArray(values.whitelistOrigins) ? values.whitelistOrigins : [],
   };
 }
 
@@ -44,6 +48,15 @@ async function connectTab(tabId, tab) {
 
   const settings = await getSettings();
   if (!settings.bridgeUrl) return;
+  if (settings.whitelistEnabled) {
+    let origin = "";
+    try {
+      origin = new URL(tab?.url || "").origin;
+    } catch {
+      return;
+    }
+    if (!settings.whitelistOrigins.includes(origin)) return;
+  }
   if (connection?.retryTimer) clearTimeout(connection.retryTimer);
   connection = {
     tabId,
@@ -116,6 +129,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === "agent_message") {
+    if (message.message?.type === "open_page") {
+      const payload = message.message.payload || {};
+      if (typeof payload.url !== "string" || typeof payload.pageId !== "string") {
+        sendToBridge(tabId, {
+          id: message.message.id,
+          type: message.message.type,
+          ok: false,
+          error: { code: "INVALID_ARGUMENT", message: "url and pageId are required" },
+        });
+        sendResponse({ ok: true });
+        return true;
+      }
+      const target = new URL(payload.url);
+      const originalHash = target.hash.slice(1);
+      target.hash = new URLSearchParams({
+        "remote-page-agent-page": payload.pageId,
+        ...(originalHash ? { "remote-page-agent-original-hash": originalHash } : {}),
+      }).toString();
+      chrome.tabs
+        .create({ url: target.href, active: true })
+        .then(() =>
+          sendToBridge(tabId, {
+            id: message.message.id,
+            type: message.message.type,
+            ok: true,
+            result: { opened: true, pageId: payload.pageId },
+          }),
+        )
+        .catch((error) =>
+          sendToBridge(tabId, {
+            id: message.message.id,
+            type: message.message.type,
+            ok: false,
+            error: { code: "OPEN_PAGE_FAILED", message: String(error.message || error) },
+          }),
+        );
+      sendResponse({ ok: true });
+      return true;
+    }
     sendToBridge(tabId, message.message);
     sendResponse({ ok: true });
     return true;

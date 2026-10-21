@@ -1,12 +1,21 @@
-const defaults = { bridgeUrl: "ws://localhost:9222/agent", bridgeToken: "" };
+const defaults = {
+  bridgeUrl: "ws://localhost:9222/agent",
+  bridgeToken: "",
+  whitelistEnabled: false,
+  whitelistOrigins: [],
+};
 const form = document.querySelector("#settings");
 const bridgeUrl = document.querySelector("#bridgeUrl");
 const bridgeToken = document.querySelector("#bridgeToken");
+const whitelistEnabled = document.querySelector("#whitelistEnabled");
+const whitelistOrigins = document.querySelector("#whitelistOrigins");
 const status = document.querySelector("#status");
 
 chrome.storage.local.get(defaults).then((values) => {
   bridgeUrl.value = values.bridgeUrl;
   bridgeToken.value = values.bridgeToken;
+  whitelistEnabled.checked = values.whitelistEnabled;
+  whitelistOrigins.value = values.whitelistOrigins.join("\n");
 });
 
 form.addEventListener("submit", async (event) => {
@@ -14,6 +23,11 @@ form.addEventListener("submit", async (event) => {
   await chrome.storage.local.set({
     bridgeUrl: bridgeUrl.value.trim(),
     bridgeToken: bridgeToken.value.trim(),
+    whitelistEnabled: whitelistEnabled.checked,
+    whitelistOrigins: whitelistOrigins.value
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean),
   });
   status.textContent = "Saved";
   setTimeout(() => {

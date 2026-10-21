@@ -7,6 +7,7 @@
       body { max-width: 640px; margin: 32px auto; font: 16px system-ui, sans-serif; }
       label { display: block; margin: 16px 0; }
       input { box-sizing: border-box; display: block; margin-top: 6px; padding: 8px; width: 100%; }
+      textarea { box-sizing: border-box; display: block; margin-top: 6px; min-height: 100px; padding: 8px; width: 100%; }
       button { padding: 8px 16px; }
       #status { margin-left: 12px; }
     </style>
@@ -19,6 +20,10 @@
       </label>
       <label>Connection token
         <input id="bridgeToken" type="password" autocomplete="off">
+      </label>
+      <label><input id="whitelistEnabled" type="checkbox"> Only connect on allowed origins</label>
+      <label>Allowed origins, one per line
+        <textarea id="whitelistOrigins" placeholder="https://example.com"></textarea>
       </label>
       <button type="submit">Save</button><span id="status" role="status"></span>
     </form>
