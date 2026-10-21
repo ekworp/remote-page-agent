@@ -33,7 +33,7 @@ This is an early prototype. Do not expose it directly to the public internet.
 | Page text, links, and page information | ✅ Complete | Supports DOM summaries and fixed page information commands. |
 | Accessibility Snapshot | ✅ Complete | Includes roles, names, URLs, states, and interaction properties. Coverage is smaller than full CDP. |
 | Snapshot compaction | ✅ Complete | Folds layout nodes and removes clearly decorative SVGs while preserving interactive descendants. |
-| Click, type, scroll, and navigation | ⚠️ Compatibility issues remain | Works on ordinary pages; some clicks on dynamic pages such as GitHub still need work. |
+| Click, type, scroll, and navigation | ✅ Mostly complete | Supports ordinary and dynamic-page links and buttons, including generic accessibility wrappers; click responses remain safe across navigation and page teardown. |
 | Console messages | ✅ Complete | Forwards page events through the limited CDP interface. |
 | Restricted page-side JavaScript | ⚠️ Intentionally limited | Allows fixed commands and a small expression allowlist, not arbitrary JavaScript. |
 | Origin whitelist | ✅ Complete | Limits which pages may connect automatically. |
