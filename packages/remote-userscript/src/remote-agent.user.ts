@@ -56,6 +56,7 @@ const whitelistEnabledStorageKey = "remote-page-agent-whitelist-enabled";
 const whitelistOriginsStorageKey = "remote-page-agent-whitelist-origins";
 const temporaryGrantStorageKey = "remote-page-agent-temporary-grants";
 const commandHistoryLimitStorageKey = "remote-page-agent-command-history-limit";
+const consoleLevelStorageKey = "remote-page-agent-console-level";
 const defaultBridgeUrl = "ws://localhost:9222/agent";
 const temporaryGrantTtlMs = 60_000;
 const temporaryGrantIdleTtlMs = 5 * 60_000;
@@ -74,6 +75,11 @@ const translations: Record<string, Record<Language, string>> = {
   commandHistory: { zh: "命令执行历史", en: "Command history" },
   noCommandHistory: { zh: "暂无命令记录", en: "No commands yet" },
   historyLimit: { zh: "最多保留历史条数（1-200）", en: "Maximum history entries (1-200)" },
+  consoleLevel: { zh: "Console 转发级别", en: "Console forwarding level" },
+  consoleAll: { zh: "全部消息", en: "All messages" },
+  consoleWarn: { zh: "警告和错误", en: "Warnings and errors" },
+  consoleError: { zh: "仅错误", en: "Errors only" },
+  consoleOff: { zh: "关闭", en: "Disabled" },
   settingsTitle: { zh: "Remote Page Agent 连接设置", en: "Remote Page Agent connection settings" },
   serverAddress: { zh: "服务器地址", en: "Server address" },
   connectionPassword: { zh: "连接密码", en: "Connection password" },
@@ -171,6 +177,8 @@ try {
 let nextBackendNodeId = 1;
 const backendNodeIdByElement = new WeakMap<Element, number>();
 const elementsByBackendNodeId = new Map<number, Element>();
+let accessibilityTreeCache: AccessibilityNode[] | undefined;
+let accessibilityTreeCacheDepth: number | undefined;
 
 function backendNodeIdFor(element: Element): number {
   let id = backendNodeIdByElement.get(element);
@@ -222,6 +230,51 @@ type CommandHistoryEntry = {
 const commandHistory: CommandHistoryEntry[] = [];
 const commandHistoryById = new Map<string, CommandHistoryEntry>();
 const defaultCommandHistoryLimit = 30;
+type ConsoleLevel = "all" | "warn" | "error" | "off";
+const eventWindowMs = 10_000;
+const maxConsoleEvents = 50;
+const maxPageEvents = 20;
+let consoleWindowStarted = 0;
+let consoleWindowCount = 0;
+let pageWindowStarted = 0;
+let pageWindowCount = 0;
+
+function getConsoleLevel(): ConsoleLevel {
+  const value = GM_getValue<string>(consoleLevelStorageKey, "warn");
+  return value === "all" || value === "warn" || value === "error" || value === "off"
+    ? value
+    : "warn";
+}
+
+let currentConsoleLevel = getConsoleLevel();
+
+function consoleLevelAllows(method: "log" | "warn" | "error"): boolean {
+  const level = currentConsoleLevel;
+  if (level === "off") return false;
+  if (level === "error") return method === "error";
+  if (level === "warn") return method === "warn" || method === "error";
+  return true;
+}
+
+function allowEvent(kind: "console" | "page"): boolean {
+  const now = Date.now();
+  if (kind === "console") {
+    if (now - consoleWindowStarted >= eventWindowMs) {
+      consoleWindowStarted = now;
+      consoleWindowCount = 0;
+    }
+    if (consoleWindowCount >= maxConsoleEvents) return false;
+    consoleWindowCount += 1;
+    return true;
+  }
+  if (now - pageWindowStarted >= eventWindowMs) {
+    pageWindowStarted = now;
+    pageWindowCount = 0;
+  }
+  if (pageWindowCount >= maxPageEvents) return false;
+  pageWindowCount += 1;
+  return true;
+}
 
 function commandHistoryLimit(): number {
   const value = GM_getValue<number>(commandHistoryLimitStorageKey, defaultCommandHistoryLimit);
@@ -673,6 +726,35 @@ function configureBridge(): void {
   historyLimitInput.max = "200";
   historyLimitInput.step = "1";
 
+  const consoleLabel = document.createElement("label");
+  consoleLabel.style.cssText = "display: block; margin-top: 12px; font-weight: 600;";
+  consoleLabel.textContent = translate("consoleLevel");
+  const consoleSelect = document.createElement("select");
+  consoleSelect.style.cssText = [
+    "display: block",
+    "box-sizing: border-box",
+    "width: 100%",
+    "margin-top: 6px",
+    "padding: 8px 10px",
+    "border: 1px solid #d1d5db",
+    "border-radius: 6px",
+    "font: inherit",
+  ].join(";");
+  for (const [value, label] of [
+    ["all", translate("consoleAll")],
+    ["warn", translate("consoleWarn")],
+    ["error", translate("consoleError")],
+    ["off", translate("consoleOff")],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    consoleSelect.append(option);
+  }
+  consoleSelect.value = getConsoleLevel();
+  consoleLabel.append(consoleSelect);
+  panel.append(consoleLabel);
+
   const languageLabel = document.createElement("label");
   languageLabel.style.cssText = "display: block; margin-top: 12px; font-weight: 600;";
   languageLabel.textContent = translate("language");
@@ -789,6 +871,10 @@ function configureBridge(): void {
     GM_setValue(bridgeStorageKey, url);
     GM_setValue(bridgeTokenStorageKey, tokenInput.value.trim());
     GM_setValue(commandHistoryLimitStorageKey, historyLimit);
+    currentConsoleLevel = ["all", "warn", "error", "off"].includes(consoleSelect.value)
+      ? (consoleSelect.value as ConsoleLevel)
+      : "warn";
+    GM_setValue(consoleLevelStorageKey, currentConsoleLevel);
     trimCommandHistory();
     GM_setValue(
       languageStorageKey,
@@ -820,6 +906,7 @@ function send(message: unknown): void {
 }
 
 function pageEvent(method: string, params: Record<string, unknown>): void {
+  if (!allowEvent("page")) return;
   send({ type: "page_event", method, params, url: location.href, title: document.title });
 }
 
@@ -1045,6 +1132,8 @@ function accessibilityProperties(element: Element): unknown[] {
 }
 
 function accessibilityTree(depth = 32): AccessibilityNode[] {
+  if (accessibilityTreeCache && accessibilityTreeCacheDepth === depth)
+    return accessibilityTreeCache;
   pruneBackendNodeMap();
   const maxNodes = 3000;
   const nodes: AccessibilityNode[] = [];
@@ -1098,8 +1187,15 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
   };
   nodes.push(root);
   if (document.body) root.childIds.push(...visit(document.body, 0));
-  return nodes;
+  accessibilityTreeCache = nodes;
+  accessibilityTreeCacheDepth = depth;
+  return accessibilityTreeCache;
 }
+
+new MutationObserver(() => {
+  accessibilityTreeCache = undefined;
+  accessibilityTreeCacheDepth = undefined;
+}).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
 
 function domSummary(): DomSummary {
   const text = (document.body?.innerText ?? "").replace(/\s+/g, " ").trim();
@@ -1980,9 +2076,14 @@ async function execute(request: AgentRequest): Promise<void> {
     case "click_text": {
       const text = typeof payload.text === "string" ? payload.text.trim() : "";
       if (!text) throw new Error("text is required");
-      const element = Array.from(document.querySelectorAll("body *")).find(
-        (candidate) => candidate.textContent?.trim() === text,
-      );
+      const element =
+        Array.from(document.querySelectorAll(clickableSelector)).find(
+          (candidate) =>
+            candidate.textContent?.trim() === text || candidate.getAttribute("aria-label") === text,
+        ) ||
+        Array.from(document.querySelectorAll("body *")).find(
+          (candidate) => candidate.textContent?.trim() === text,
+        );
       if (!(element instanceof Element)) throw new Error(`text not found: ${text}`);
       const target = prepareClickTarget(element);
       const scheduled = clickMayNavigate(target);
@@ -2383,6 +2484,7 @@ for (const method of ["log", "warn", "error"] as const) {
   const original = console[method];
   console[method] = (...args: unknown[]) => {
     original(...args);
+    if (!consoleLevelAllows(method) || !allowEvent("console")) return;
     send({ type: "console", method, args: args.map(String), url: location.href });
   };
 }
