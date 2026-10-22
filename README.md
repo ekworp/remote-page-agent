@@ -4,7 +4,7 @@
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-网页操盘手（Remote Page Agent） lets an agent remotely control browser pages. A userscript runs in each page and communicates with a small Node.js bridge over WebSocket. The bridge exposes a limited CDP endpoint, so CDP clients can connect without enabling Chrome remote debugging in the browser.
+网页操盘手（Remote Page Agent） lets an agent remotely control browser pages. A userscript or Chromium MV3 extension communicates with a small Node.js bridge over WebSocket. The bridge exposes a limited CDP endpoint, so CDP clients can connect without enabling Chrome remote debugging in the browser.
 
 This is an early prototype. Do not expose it directly to the public internet.
 
@@ -13,6 +13,7 @@ This is an early prototype. Do not expose it directly to the public internet.
 - Connect multiple pages from the same browser
 - Assign a browser ID and a separate page ID to each connection
 - Read page information and console messages
+- Configure Console forwarding (`all`, `warn`, `error`, or `off`; `warn` by default)
 - Find elements with CSS selectors
 - Click, type, scroll, and navigate pages
 - Restrict automatic connections with an origin whitelist
@@ -34,13 +35,13 @@ This is an early prototype. Do not expose it directly to the public internet.
 | Accessibility Snapshot | ✅ Complete | Includes roles, names, URLs, states, and interaction properties. Coverage is smaller than full CDP. |
 | Snapshot compaction | ✅ Complete | Folds layout nodes and removes clearly decorative SVGs while preserving interactive descendants. |
 | Click, type, scroll, and navigation | ✅ Mostly complete | Supports ordinary and dynamic-page links and buttons, including generic accessibility wrappers; click responses remain safe across navigation and page teardown. |
-| Console messages | ✅ Complete | Forwards page events through the limited CDP interface. |
+| Console messages | ✅ Complete | Supports configurable forwarding levels; `warn` forwards warnings and errors by default. Console and page events are rate-limited to protect the bridge. |
 | Restricted page-side JavaScript | ⚠️ Intentionally limited | Allows fixed commands and a small expression allowlist, not arbitrary JavaScript. |
 | Origin whitelist | ✅ Complete | Limits which pages may connect automatically. |
 | Token authentication | ✅ Complete | Supports a shared connection token. |
 | WSS, origin checks, and fine-grained permissions | ❌ Not implemented | The current version should not be exposed directly to the public internet. |
 | Full Chrome DevTools Protocol | ❌ Not implemented | Only the subset needed by Puppeteer/MCP is implemented. |
-| Browser extension version | ⚠️ Early implementation | A Chromium Manifest V3 version is available in `packages/remote-extension`; more commands still need to be moved over. |
+| Browser extension version | ✅ Mostly complete | The Chromium Manifest V3 version supports DOM commands, snapshots, navigation, Console forwarding, popup/options controls, reconnects, and an offscreen WebSocket connection. |
 
 ## Project layout
 
@@ -70,7 +71,9 @@ HOST=0.0.0.0 PUBLIC_HOST=192.168.1.10 \
   pnpm --filter @remote-page-agent/cdp-bridge start
 ```
 
-Install `packages/remote-userscript/dist/remote-agent.user.js` in Tampermonkey or another userscript manager. Open the script menu and choose **Configure Remote Page Agent**. The default URL is `ws://localhost:9222/agent`. If the bridge runs on another device, replace `localhost` with that device's LAN address.
+For the userscript, install `packages/remote-userscript/dist/remote-agent.user.js` in Tampermonkey or another userscript manager. Open the script menu and choose **Configure Remote Page Agent**. The default URL is `ws://localhost:9222/agent`. The same dialog configures the Console forwarding level. If the bridge runs on another device, replace `localhost` with that device's LAN address.
+
+For Chromium, load `packages/remote-extension/dist/extension/` as an unpacked Manifest V3 extension and configure the Bridge URL, token, and Console forwarding level on the Options page. The popup provides current-page status and manual reconnect.
 
 The userscript manager stores the bridge URL, browser ID, and other settings outside the page's `localStorage`. Pages and domains using the same script installation share these settings, while each page keeps its own connection and page ID.
 

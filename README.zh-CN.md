@@ -4,7 +4,7 @@
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-网页操盘手（Remote Page Agent）让 AI 通过油猴脚本连接浏览器中的网页。脚本通过 WebSocket 与 Node.js 桥接服务通信，桥接服务提供有限的 CDP 接口，因此不需要在浏览器中开启 Chrome 远程调试。
+网页操盘手（Remote Page Agent）让 AI 通过油猴脚本或 Chromium MV3 扩展控制浏览器中的网页。客户端通过 WebSocket 与 Node.js 桥接服务通信，桥接服务提供有限的 CDP 接口，因此不需要在浏览器中开启 Chrome 远程调试。
 
 这是一个早期原型，请不要直接暴露在公网中。
 
@@ -13,6 +13,7 @@
 - 连接同一浏览器中的多个页面
 - 为浏览器和每个页面维护独立 ID
 - 读取页面信息和控制台消息
+- 配置 Console 转发级别（`all`、`warn`、`error`、`off`，默认 `warn`）
 - 使用 CSS 选择器查找元素
 - 点击、输入、滚动和导航
 - 通过 origin 白名单限制自动连接页面
@@ -34,13 +35,13 @@
 | Accessibility Snapshot | ✅ 已实现 | 支持角色、名称、链接地址、状态和交互属性，覆盖范围仍小于完整 CDP。 |
 | Snapshot 节点压缩 | ✅ 已实现 | 折叠布局节点，过滤明确的装饰 SVG，同时保留交互子节点。 |
 | 点击、输入、滚动和导航 | ✅ 基本完善 | 支持普通页面和动态页面中的链接、按钮及 generic Accessibility 节点包装；点击跳转或页面销毁时仍能安全返回响应。 |
-| 控制台消息读取 | ✅ 已实现 | 通过简化 CDP 接口转发页面事件。 |
+| 控制台消息读取 | ✅ 已实现 | 支持 Console 转发级别；默认转发警告和错误，并对 Console 与页面事件限流。 |
 | 受限页面脚本执行 | ⚠️ 有意限制 | 只允许固定命令和有限表达式，不支持任意 JavaScript。 |
 | Origin 白名单 | ✅ 已实现 | 可限制允许自动连接的页面。 |
 | Token 认证 | ✅ 已实现 | 支持共享连接密码。 |
 | WSS、来源校验和细粒度权限 | ❌ 未实现 | 当前版本不适合直接暴露到公网。 |
 | 完整 Chrome DevTools Protocol | ❌ 未实现 | 当前只实现 Puppeteer/MCP 所需的有限子集。 |
-| 浏览器扩展版本 | ⚠️ 初步实现 | `packages/remote-extension` 中已有 Chromium Manifest V3 版本，仍需继续迁移更多命令。 |
+| 浏览器扩展版本 | ✅ 基本完善 | `packages/remote-extension` 支持 DOM 命令、快照、导航、Console 转发、Popup/Options、自动重连和 Offscreen WebSocket 保活。 |
 
 ## 项目结构
 
@@ -70,7 +71,9 @@ HOST=0.0.0.0 PUBLIC_HOST=192.168.1.10 \
   pnpm --filter @remote-page-agent/cdp-bridge start
 ```
 
-将 `packages/remote-userscript/dist/remote-agent.user.js` 安装到 Tampermonkey 或其他油猴脚本管理器中，然后从脚本菜单打开 **连接设置**。默认地址是 `ws://localhost:9222/agent`。如果桥接服务运行在其他设备上，请将 `localhost` 替换为该设备的局域网地址。
+油猴脚本：将 `packages/remote-userscript/dist/remote-agent.user.js` 安装到 Tampermonkey 或其他油猴脚本管理器中，然后从脚本菜单打开 **连接设置**。默认地址是 `ws://localhost:9222/agent`，同一处也可以配置 Console 转发级别。如果桥接服务运行在其他设备上，请将 `localhost` 替换为该设备的局域网地址。
+
+Chromium 扩展：在 `chrome://extensions` 中以“加载已解压的扩展程序”加载 `packages/remote-extension/dist/extension/`，然后在 Options 页面配置 Bridge 地址、令牌和 Console 转发级别。Popup 支持查看当前页面状态和手动重连。
 
 桥接地址、浏览器标识和其他设置由油猴脚本管理器保存，不写入页面的 `localStorage`。同一脚本安装下的不同页面和域名共享这些设置，但每个页面仍使用独立的连接和页面标识。
 

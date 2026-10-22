@@ -74,3 +74,20 @@ eval_safe
 - `Network.offline`
 
 `Network.online` 和 `Network.offline` 是 bridge 提供的状态通知事件，不是需要调用的 CDP 命令。
+
+## Console 消息
+
+页面 Console 通过 `console` 消息转发到 bridge：
+
+```json
+{
+  "type": "console",
+  "method": "warn",
+  "args": ["navigation warning"],
+  "url": "https://example.com/"
+}
+```
+
+`method` 支持 `log`、`warn` 和 `error`。客户端默认只转发 `warn` 和 `error`，也可以配置为转发全部消息、仅错误或关闭转发。
+
+为避免高动态页面造成 WebSocket 和 CDP 堵塞，客户端在 10 秒窗口内最多转发 50 条 Console 消息和 20 条页面事件；bridge 端还会执行独立的服务端限流。

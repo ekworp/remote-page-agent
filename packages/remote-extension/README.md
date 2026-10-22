@@ -28,8 +28,14 @@ Then:
 
 The extension supports page information, DOM summaries, accessibility
 snapshots, DOM queries, page navigation, fixed click/input operations, origin
-whitelists, command history, and English/Chinese settings. The popup replaces
-the userscript's floating status panel.
+whitelists, command history, Console forwarding, and English/Chinese settings.
+The Options page supports the Console levels `all`, `warn`, `error`, and `off`;
+`warn` is the default and forwards warnings and errors. The popup replaces the
+userscript's floating status panel and provides current-page status and manual
+reconnect.
+
+Console messages are limited to 50 per 10 seconds and page events to 20 per 10
+seconds in the extension, preventing noisy pages from overwhelming the bridge.
 
 The background uses `chrome.storage` for settings and history, `chrome.tabs`
 for tab lifecycle and new pages, and `chrome.alarms` for reconnect scheduling.
