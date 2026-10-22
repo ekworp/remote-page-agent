@@ -1,6 +1,7 @@
 {
   "name": "remote-page-agent",
-  "private": true,
+  "private": false,
+  "author": "ekworp",
   "packageManager": "pnpm@11.27.0",
   "scripts": {
     "build": "pnpm -r build",

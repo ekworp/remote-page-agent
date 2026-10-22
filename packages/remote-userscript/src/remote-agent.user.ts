@@ -1,6 +1,7 @@
 // ==UserScript==
 // @name         网页操盘手 | Remote Page Agent
 // @namespace    remote-page-agent
+// @author       ekworp
 // @version      __PACKAGE_VERSION__
 // @description  Let AI remotely control browser pages through a userscript and WebSocket.
 // @icon         https://cdn.jsdelivr.net/gh/ekworp/remote-page-agent@main/assets/remote-page-agent.png

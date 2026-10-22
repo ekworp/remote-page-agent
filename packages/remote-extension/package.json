@@ -1,7 +1,8 @@
 {
   "name": "@remote-page-agent/remote-extension",
-  "private": true,
+  "private": false,
   "version": "0.3.3",
+  "author": "ekworp",
   "type": "module",
   "scripts": {
     "build": "node scripts/clean.mjs && tsc && sass --load-path=node_modules src/bootstrap.scss dist/extension/bootstrap.css --no-source-map --style=compressed && node scripts/package.mjs",

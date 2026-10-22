@@ -1,7 +1,8 @@
 {
   "name": "@remote-page-agent/remote-userscript",
-  "private": true,
+  "private": false,
   "version": "0.3.3",
+  "author": "ekworp",
   "type": "module",
   "scripts": {
     "build": "tsc && node scripts/inject-version.mjs",

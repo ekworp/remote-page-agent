@@ -1,7 +1,8 @@
 {
   "name": "@remote-page-agent/cdp-bridge",
-  "private": true,
+  "private": false,
   "version": "0.3.3",
+  "author": "ekworp",
   "type": "module",
   "scripts": {
     "build": "tsc",
