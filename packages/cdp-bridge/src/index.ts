@@ -121,6 +121,7 @@ const agentSocketAlive = new WeakMap<WebSocket, boolean>();
 const agentHeartbeatIntervalMs = 30_000;
 const pending = new Map<string, PendingRequest>();
 const sessions = new Map<string, string>();
+const sessionsByPage = new Map<string, Set<string>>();
 const functionHandles = new Map<string, string>();
 const domHandles = new Map<string, number>();
 const pollerHandles = new Set<string>();
@@ -196,11 +197,34 @@ function broadcast(value: unknown): void {
 }
 
 function broadcastPageEvent(pageId: string, method: string, params: Record<string, unknown>): void {
-  for (const client of clients) {
-    for (const [sessionId, sessionPageId] of sessions) {
-      if (sessionPageId === pageId) send(client, cdpEvent(method, params, sessionId));
-    }
+  const pageSessions = sessionsByPage.get(pageId);
+  if (!pageSessions) return;
+  for (const sessionId of pageSessions) {
+    const owner = sessionOwners.get(sessionId);
+    if (owner) send(owner, cdpEvent(method, params, sessionId));
   }
+}
+
+function addSession(sessionId: string, pageId: string, owner: WebSocket): void {
+  sessions.set(sessionId, pageId);
+  sessionOwners.set(sessionId, owner);
+  let pageSessions = sessionsByPage.get(pageId);
+  if (!pageSessions) {
+    pageSessions = new Set();
+    sessionsByPage.set(pageId, pageSessions);
+  }
+  pageSessions.add(sessionId);
+}
+
+function removeSession(sessionId: string): void {
+  const pageId = sessions.get(sessionId);
+  sessions.delete(sessionId);
+  sessionOwners.delete(sessionId);
+  executionContextIds.delete(sessionId);
+  if (!pageId) return;
+  const pageSessions = sessionsByPage.get(pageId);
+  pageSessions?.delete(sessionId);
+  if (pageSessions?.size === 0) sessionsByPage.delete(pageId);
 }
 
 function markTargetCreated(socket: WebSocket, page: PageConnection): boolean {
@@ -230,8 +254,7 @@ function attachPage(socket: WebSocket, page: PageConnection): string {
   }
   attached.add(page.pageId);
   const sessionId = randomUUID();
-  sessions.set(sessionId, page.pageId);
-  sessionOwners.set(sessionId, socket);
+  addSession(sessionId, page.pageId, socket);
   send(
     socket,
     cdpEvent("Target.attachedToTarget", {
@@ -256,9 +279,7 @@ function detachPageSessions(pageId: string): void {
         }),
       );
     }
-    sessions.delete(sessionId);
-    sessionOwners.delete(sessionId);
-    executionContextIds.delete(sessionId);
+    removeSession(sessionId);
   }
 }
 
@@ -1112,8 +1133,7 @@ async function handleTargetCommand(socket: WebSocket, message: CdpMessage): Prom
         throw new Error(`Unknown target: ${String(targetId)}`);
       }
       const newSessionId = randomUUID();
-      sessions.set(newSessionId, targetId);
-      sessionOwners.set(newSessionId, socket);
+      addSession(newSessionId, targetId, socket);
       send(
         socket,
         cdpEvent("Target.attachedToTarget", {
@@ -1134,9 +1154,7 @@ async function handleTargetCommand(socket: WebSocket, message: CdpMessage): Prom
         if (targetId && owner) {
           autoAttachedTargetsByClient.get(owner)?.delete(targetId);
         }
-        sessions.delete(detachingSession);
-        sessionOwners.delete(detachingSession);
-        executionContextIds.delete(detachingSession);
+        removeSession(detachingSession);
       }
       send(socket, cdpResult(message, {}));
       return true;
@@ -1950,9 +1968,7 @@ server.on("upgrade", (request: IncomingMessage, socket, head) => {
         discoveredTargetsByClient.delete(client);
         for (const [sessionId, owner] of sessionOwners) {
           if (owner !== client) continue;
-          sessions.delete(sessionId);
-          sessionOwners.delete(sessionId);
-          executionContextIds.delete(sessionId);
+          removeSession(sessionId);
         }
         logConnection(
           `CDP client disconnected (${path}) code=${code} reason=${String(reason).slice(0, 120)}`,

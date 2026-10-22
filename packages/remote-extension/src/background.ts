@@ -26,6 +26,9 @@ const connections = new Map<number, TabConnection>();
 let browserIdPromise: Promise<string> | undefined;
 let offscreenReady = false;
 let offscreenEnsurePromise: Promise<boolean> | undefined;
+let historyCache: Array<Record<string, unknown>> | undefined;
+let historyCachePromise: Promise<Array<Record<string, unknown>>> | undefined;
+let historyWriteTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function updateActionStatus() {
   const count = Array.from(connections.values()).filter(
@@ -109,6 +112,31 @@ function saveStoredConnections() {
       pageId,
     })),
   });
+}
+
+async function getHistoryCache() {
+  if (Array.isArray(historyCache)) return historyCache;
+  if (!historyCachePromise) {
+    historyCachePromise = chrome.storage.local
+      .get({ commandHistory: [] })
+      .then((values) => {
+        historyCache = Array.isArray(values.commandHistory) ? values.commandHistory : [];
+        return historyCache;
+      })
+      .finally(() => {
+        historyCachePromise = undefined;
+      });
+  }
+  await historyCachePromise;
+  return historyCache;
+}
+
+function scheduleHistoryWrite() {
+  if (historyWriteTimer) return;
+  historyWriteTimer = setTimeout(() => {
+    historyWriteTimer = undefined;
+    void chrome.storage.local.set({ commandHistory: historyCache ?? [] });
+  }, 250);
 }
 
 function getBrowserId() {
@@ -205,8 +233,7 @@ async function recordHistory(id, type, status, pageId) {
   if (typeof id !== "string" || !id || typeof type !== "string" || typeof pageId !== "string")
     return;
   const settings = await getSettings();
-  const values = await chrome.storage.local.get({ commandHistory: [] });
-  const history = Array.isArray(values.commandHistory) ? values.commandHistory : [];
+  const history = await getHistoryCache();
   const existing = history.find((entry) => entry.id === id && entry.pageId === pageId);
   if (existing) {
     existing.status = status;
@@ -216,12 +243,11 @@ async function recordHistory(id, type, status, pageId) {
   }
   const pageHistory = history
     .filter((entry) => entry.pageId === pageId)
-    .sort((a, b) => b.timestamp - a.timestamp)
+    .sort((a, b) => Number(b.timestamp) - Number(a.timestamp))
     .slice(0, settings.commandHistoryLimit);
   const otherHistory = history.filter((entry) => entry.pageId !== pageId);
-  await chrome.storage.local.set({
-    commandHistory: [...pageHistory, ...otherHistory],
-  });
+  historyCache = [...pageHistory, ...otherHistory];
+  scheduleHistoryWrite();
 }
 
 async function popupState() {
@@ -229,14 +255,13 @@ async function popupState() {
   const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const activeConnection =
     typeof activeTab?.id === "number" ? connections.get(activeTab.id) : undefined;
-  const values = await chrome.storage.local.get({ commandHistory: [] });
+  const history = await getHistoryCache();
   return {
     language: settings.language,
     pageId: activeConnection?.pageId || "",
-    history:
-      activeConnection && Array.isArray(values.commandHistory)
-        ? values.commandHistory.filter((entry) => entry.pageId === activeConnection.pageId)
-        : [],
+    history: activeConnection
+      ? history.filter((entry) => entry.pageId === activeConnection.pageId)
+      : [],
     connections: Array.from(connections.values()).map((connection) => ({
       tabId: connection.tabId,
       pageId: connection.pageId,
@@ -325,16 +350,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === "clear_history") {
-    chrome.storage.local
-      .get({ commandHistory: [] })
-      .then((values) => {
-        const history = Array.isArray(values.commandHistory) ? values.commandHistory : [];
-        return chrome.storage.local.set({
-          commandHistory:
-            typeof message.pageId === "string"
-              ? history.filter((entry) => entry.pageId !== message.pageId)
-              : history,
-        });
+    getHistoryCache()
+      .then((history) => {
+        historyCache =
+          typeof message.pageId === "string"
+            ? history.filter((entry) => entry.pageId !== message.pageId)
+            : [];
+        if (historyWriteTimer) {
+          clearTimeout(historyWriteTimer);
+          historyWriteTimer = undefined;
+        }
+        return chrome.storage.local.set({ commandHistory: historyCache });
       })
       .then(() => sendResponse({ ok: true }));
     return true;

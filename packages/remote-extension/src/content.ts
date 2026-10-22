@@ -1,7 +1,9 @@
 // @ts-nocheck
 
 const nodesById = new Map();
+const idsByNode = new WeakMap();
 let nextBackendNodeId = 1;
+let accessibilityTreeCache: unknown[] | undefined;
 const CONSOLE_MESSAGE_TYPE = "remote-page-agent-console";
 const NAVIGATION_MESSAGE_TYPE = "remote-page-agent-navigation";
 let consoleLevel = "warn";
@@ -88,10 +90,10 @@ window.addEventListener("message", (event) => {
 });
 
 function backendNodeIdFor(element) {
-  for (const [id, node] of nodesById) {
-    if (node === element) return id;
-  }
+  const existingId = idsByNode.get(element);
+  if (existingId) return existingId;
   const id = nextBackendNodeId++;
+  idsByNode.set(element, id);
   nodesById.set(id, element);
   return id;
 }
@@ -163,6 +165,7 @@ function propertiesFor(element) {
 }
 
 function accessibilityTree() {
+  if (accessibilityTreeCache) return accessibilityTreeCache;
   pruneBackendNodes();
   const nodes = [];
   const maxNodes = 3000;
@@ -206,8 +209,13 @@ function accessibilityTree() {
   };
   nodes.push(root);
   if (document.body) root.childIds = visit(document.body, 0);
-  return nodes;
+  accessibilityTreeCache = nodes;
+  return accessibilityTreeCache;
 }
+
+new MutationObserver(() => {
+  accessibilityTreeCache = undefined;
+}).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
 
 function domSummary() {
   return {
@@ -335,9 +343,16 @@ function domNode(element, depth = 0) {
 }
 
 function clickByText(text) {
-  const candidate = Array.from(document.querySelectorAll("body *")).find(
-    (element) => element.innerText?.trim() === text,
-  );
+  const interactiveSelector =
+    "a[href], button, input, textarea, select, [role=button], [role=link]";
+  const candidate =
+    Array.from(document.querySelectorAll(interactiveSelector)).find(
+      (element) =>
+        element.innerText?.trim() === text || element.getAttribute("aria-label") === text,
+    ) ||
+    Array.from(document.querySelectorAll("body *")).find(
+      (element) => element.innerText?.trim() === text,
+    );
   if (!candidate) throw new Error(`text not found: ${text}`);
   const target = clickTarget(candidate);
   target.scrollIntoView({ block: "center", inline: "center" });
