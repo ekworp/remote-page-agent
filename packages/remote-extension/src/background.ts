@@ -12,7 +12,6 @@ type TabConnection = {
   attempt: number;
   closedByExtension: boolean;
   connected: boolean;
-  retryTimer?: number;
 };
 type BridgeMessage = {
   type?: string;
@@ -283,7 +282,6 @@ async function connectTab(tabId, tab, requestedPageId, force = false) {
     );
     if (!settings.whitelistOrigins.includes(origin) && !temporaryAccess) return;
   }
-  if (connection?.retryTimer) clearTimeout(connection.retryTimer);
   await chrome.alarms.clear(`${RECONNECT_ALARM_PREFIX}${tabId}`);
   connection = {
     tabId,
