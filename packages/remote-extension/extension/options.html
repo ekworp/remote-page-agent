@@ -8,7 +8,6 @@
     <link rel="stylesheet" href="styles.css">
     <style>
       body {
-        min-width: 360px;
         background: var(--bg);
         color: var(--text);
       }
@@ -37,7 +36,8 @@
             <input id="bridgeUrl" class="form-control" type="url" required placeholder="ws://localhost:9222/agent">
           </label>
           <label class="mb-3 d-block"><span class="form-label fw-semibold" data-i18n="token">Connection token</span>
-            <input id="bridgeToken" class="form-control" type="password" autocomplete="off">
+           <input id="bridgeToken" class="form-control" type="password" autocomplete="off">
+           <div class="d-flex align-items-center gap-3 mt-2"><button id="testBridge" class="btn btn-outline-secondary" type="button" data-i18n="testBridge">Test bridge</button><span id="bridgeTestStatus" class="small" role="status" aria-live="polite"></span></div>
           </label>
         </section>
         <section class="card mt-3 p-3 p-md-4 shadow-sm rounded-4">
@@ -55,6 +55,14 @@
           </label>
           <label class="mb-3 d-block"><span class="form-label fw-semibold" data-i18n="historyLimit">Maximum history entries</span>
             <input id="commandHistoryLimit" class="form-control" type="number" min="1" max="200" step="1">
+          </label>
+          <label class="mb-0 d-block"><span class="form-label fw-semibold" data-i18n="consoleLevel">Console forwarding level</span>
+            <select id="consoleLevel" class="form-select">
+              <option value="all" data-i18n="consoleAll">All messages</option>
+              <option value="warn" data-i18n="consoleWarn">Warnings and errors</option>
+              <option value="error" data-i18n="consoleError">Errors only</option>
+              <option value="off" data-i18n="consoleOff">Disabled</option>
+            </select>
           </label>
         </section>
         <div class="actions d-flex align-items-center gap-3 mt-4">

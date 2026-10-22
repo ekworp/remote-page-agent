@@ -2,6 +2,90 @@
 
 const nodesById = new Map();
 let nextBackendNodeId = 1;
+const CONSOLE_MESSAGE_TYPE = "remote-page-agent-console";
+const NAVIGATION_MESSAGE_TYPE = "remote-page-agent-navigation";
+let consoleLevel = "warn";
+const EVENT_WINDOW_MS = 10_000;
+const MAX_CONSOLE_EVENTS = 50;
+const MAX_PAGE_EVENTS = 20;
+let consoleWindowStarted = 0;
+let consoleWindowCount = 0;
+let pageWindowStarted = 0;
+let pageWindowCount = 0;
+
+function allowEvent(kind) {
+  const now = Date.now();
+  if (kind === "console") {
+    if (now - consoleWindowStarted >= EVENT_WINDOW_MS) {
+      consoleWindowStarted = now;
+      consoleWindowCount = 0;
+    }
+    if (consoleWindowCount >= MAX_CONSOLE_EVENTS) return false;
+    consoleWindowCount += 1;
+    return true;
+  }
+  if (now - pageWindowStarted >= EVENT_WINDOW_MS) {
+    pageWindowStarted = now;
+    pageWindowCount = 0;
+  }
+  if (pageWindowCount >= MAX_PAGE_EVENTS) return false;
+  pageWindowCount += 1;
+  return true;
+}
+
+function consoleLevelAllows(method) {
+  if (consoleLevel === "off") return false;
+  if (consoleLevel === "error") return method === "error";
+  if (consoleLevel === "warn") return method === "warn" || method === "error";
+  return true;
+}
+
+void chrome.storage.local
+  .get({ consoleLevel: "warn" })
+  .then((values) => {
+    if (["all", "warn", "error", "off"].includes(values.consoleLevel)) {
+      consoleLevel = values.consoleLevel;
+    }
+  })
+  .catch(() => {});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.consoleLevel) return;
+  if (["all", "warn", "error", "off"].includes(changes.consoleLevel.newValue)) {
+    consoleLevel = changes.consoleLevel.newValue;
+  }
+});
+
+function consumePageIdFragment() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (!params.has("remote-page-agent-page")) return "";
+  const pageId = params.get("remote-page-agent-page") || "";
+  const originalHash = params.get("remote-page-agent-original-hash");
+  try {
+    const cleanUrl = `${location.pathname}${location.search}${originalHash ? `#${originalHash}` : ""}`;
+    history.replaceState(history.state, document.title, cleanUrl);
+  } catch {
+    // The URL may be unavailable during very early document startup.
+  }
+  return pageId;
+}
+
+const initialPageId = consumePageIdFragment();
+let pageId = initialPageId;
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return;
+  if (event.data?.type === NAVIGATION_MESSAGE_TYPE) {
+    announceNavigation();
+    return;
+  }
+  if (event.data?.type !== CONSOLE_MESSAGE_TYPE) return;
+  const { method, args, url } = event.data;
+  if (!(["log", "warn", "error"] as const).includes(method)) return;
+  if (!consoleLevelAllows(method)) return;
+  if (!Array.isArray(args) || typeof url !== "string") return;
+  if (!allowEvent("console")) return;
+  send({ type: "console", method, args: args.map(String), url });
+});
 
 function backendNodeIdFor(element) {
   for (const [id, node] of nodesById) {
@@ -422,6 +506,12 @@ function commandResult(message) {
     case "eval_safe":
       return safeEvaluation(payload.code);
     case "dom_operation": {
+      if (payload.operation === "document_size") {
+        return {
+          documentWidth: document.documentElement.clientWidth,
+          documentHeight: document.documentElement.clientHeight,
+        };
+      }
       const source = elementByBackendNodeId(payload.backendNodeId);
       const element = clickTarget(source);
       switch (payload.operation) {
@@ -507,11 +597,6 @@ function commandResult(message) {
           return source.parentElement
             ? { backendNodeId: backendNodeIdFor(source.parentElement) }
             : null;
-        case "document_size":
-          return {
-            documentWidth: document.documentElement.clientWidth,
-            documentHeight: document.documentElement.clientHeight,
-          };
         default:
           throw new Error(`Unsupported DOM operation: ${payload.operation}`);
       }
@@ -521,14 +606,28 @@ function commandResult(message) {
   }
 }
 
+let extensionContextInvalidated = false;
+
 function send(message) {
-  chrome.runtime.sendMessage({ type: "agent_message", message });
+  if (extensionContextInvalidated) return;
+  try {
+    void chrome.runtime.sendMessage({ type: "agent_message", message }).catch(() => {
+      extensionContextInvalidated = true;
+    });
+  } catch {
+    // The extension may have been reloaded while this document was open.
+    extensionContextInvalidated = true;
+  }
 }
 
 let bridgeReady = false;
+let contentReadySent = false;
+let lastAnnouncedUrl = "";
+let lastAnnouncedTitle = "";
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "bridge_ready") {
+    if (typeof message.pageId === "string" && message.pageId) pageId = message.pageId;
     bridgeReady = true;
     announce();
     return;
@@ -550,16 +649,89 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 function announce() {
-  chrome.runtime.sendMessage({ type: "content_ready" });
+  if (!contentReadySent) {
+    if (extensionContextInvalidated) return;
+    try {
+      void chrome.runtime
+        .sendMessage({ type: "content_ready", pageId: initialPageId || undefined })
+        .catch(() => {
+          extensionContextInvalidated = true;
+        });
+    } catch {
+      extensionContextInvalidated = true;
+      return;
+    }
+    contentReadySent = true;
+  }
   if (!bridgeReady) return;
-  send({
-    type: "page_event",
-    method: "Page.frameNavigated",
-    params: { frame: { id: location.href, url: location.href } },
-    url: location.href,
-    title: document.title,
+  if (location.href === lastAnnouncedUrl && document.title === lastAnnouncedTitle) return;
+  lastAnnouncedUrl = location.href;
+  lastAnnouncedTitle = document.title;
+  pageEvent("Page.frameNavigated", {
+    frame: { id: pageId || location.href, url: location.href },
   });
 }
 
-window.addEventListener("load", announce, { once: true });
+function pageEvent(method, params = {}) {
+  if (!bridgeReady) return;
+  if (!allowEvent("page")) return;
+  send({ type: "page_event", method, params, url: location.href, title: document.title });
+}
+
+function announceNavigation() {
+  if (!bridgeReady) return;
+  if (location.href === lastAnnouncedUrl && document.title === lastAnnouncedTitle) return;
+  const frameId = pageId || location.href;
+  pageEvent("Page.frameNavigated", {
+    frame: {
+      id: frameId,
+      url: location.href,
+      securityOrigin: location.origin,
+      mimeType: "text/html",
+    },
+  });
+  pageEvent("Page.navigatedWithinDocument", { frameId, url: location.href });
+  pageEvent("Page.lifecycleEvent", {
+    frameId,
+    loaderId: frameId,
+    name: "load",
+    timestamp: Date.now() / 1000,
+  });
+  lastAnnouncedUrl = location.href;
+  lastAnnouncedTitle = document.title;
+}
+
+window.addEventListener(
+  "load",
+  () => {
+    announce();
+    pageEvent("Page.loadEventFired", { timestamp: Date.now() / 1000 });
+    pageEvent("Page.lifecycleEvent", {
+      frameId: pageId || location.href,
+      loaderId: pageId || location.href,
+      name: "load",
+      timestamp: Date.now() / 1000,
+    });
+  },
+  { once: true },
+);
+window.addEventListener("offline", () => pageEvent("Network.offline", { online: false }));
+window.addEventListener("online", () => pageEvent("Network.online", { online: true }));
+window.addEventListener("pageshow", announceNavigation);
+let observedTitle = null;
+const titleObserver = new MutationObserver(announceNavigation);
+const observeTitle = () => {
+  const title = document.querySelector("title");
+  if (!title || title === observedTitle) return;
+  observedTitle = title;
+  titleObserver.observe(title, { childList: true, characterData: true, subtree: true });
+  announceNavigation();
+};
+observeTitle();
+if (document.head) {
+  new MutationObserver(observeTitle).observe(document.head, { childList: true });
+}
+if ("navigation" in window) {
+  window.navigation.addEventListener("navigatesuccess", announceNavigation);
+}
 announce();

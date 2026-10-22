@@ -17,6 +17,9 @@ const translations = {
     originAdded: "Page origin added",
     alreadyAdded: "Page origin is already allowed",
     noPage: "Current page unavailable",
+    reconnect: "Reconnect current page",
+    reconnecting: "Reconnecting…",
+    reconnected: "Reconnect requested",
   },
   zh: {
     title: "网页操盘手",
@@ -32,6 +35,9 @@ const translations = {
     originAdded: "已加入页面来源",
     alreadyAdded: "当前页面已允许",
     noPage: "当前页面不可用",
+    reconnect: "重新连接当前页面",
+    reconnecting: "正在重新连接…",
+    reconnected: "已请求重新连接",
   },
 };
 
@@ -87,13 +93,28 @@ function render(state) {
 
 chrome.runtime.sendMessage({ type: "popup_state" }).then(render);
 document.querySelector("#version").textContent = chrome.runtime.getManifest().version;
+document.querySelector("#reconnect").addEventListener("click", async () => {
+  const settings = await chrome.storage.local.get({ language: "auto" });
+  const strings = translations[language(settings.language)];
+  const button = document.querySelector("#reconnect");
+  button.disabled = true;
+  button.textContent = strings.reconnecting;
+  const result = await chrome.runtime.sendMessage({ type: "reconnect_active" });
+  button.textContent = result?.ok ? strings.reconnected : strings.reconnect;
+  showStatus(result?.ok ? strings.reconnected : result?.error || strings.reconnect);
+  window.setTimeout(() => {
+    button.disabled = false;
+    button.textContent = strings.reconnect;
+  }, 1500);
+});
 document
   .querySelector("#options")
   .addEventListener("click", () => chrome.runtime.openOptionsPage());
 document.querySelector("#clear").addEventListener("click", async () => {
-  await chrome.runtime.sendMessage({ type: "clear_history" });
   const state = await chrome.runtime.sendMessage({ type: "popup_state" });
-  render(state);
+  await chrome.runtime.sendMessage({ type: "clear_history", pageId: state.pageId });
+  const updatedState = await chrome.runtime.sendMessage({ type: "popup_state" });
+  render(updatedState);
 });
 
 function showStatus(text) {

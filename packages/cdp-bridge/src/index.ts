@@ -81,7 +81,31 @@ type PageConnection = {
   socket: WebSocket;
   url: string;
   title: string;
+  consoleMessages: Array<Record<string, unknown>>;
+  pageEventWindowStarted: number;
+  pageEventCount: number;
+  consoleEventWindowStarted: number;
+  consoleEventCount: number;
 };
+
+const EVENT_WINDOW_MS = 10_000;
+const MAX_PAGE_EVENTS = 50;
+const MAX_CONSOLE_EVENTS = 100;
+
+function allowPageEvent(page: PageConnection, kind: "page" | "console"): boolean {
+  const now = Date.now();
+  const isConsole = kind === "console";
+  const startedKey = isConsole ? "consoleEventWindowStarted" : "pageEventWindowStarted";
+  const countKey = isConsole ? "consoleEventCount" : "pageEventCount";
+  if (now - page[startedKey] >= EVENT_WINDOW_MS) {
+    page[startedKey] = now;
+    page[countKey] = 0;
+  }
+  const limit = isConsole ? MAX_CONSOLE_EVENTS : MAX_PAGE_EVENTS;
+  if (page[countKey] >= limit) return false;
+  page[countKey] += 1;
+  return true;
+}
 
 type PendingRequest = {
   pageId: string;
@@ -384,10 +408,14 @@ function cdpResult(message: CdpMessage, result: unknown): Record<string, unknown
   return { id: message.id, result, ...(message.sessionId ? { sessionId: message.sessionId } : {}) };
 }
 
-function cdpError(message: CdpMessage, text: string): Record<string, unknown> {
+function cdpError(
+  message: CdpMessage,
+  text: string,
+  data?: Record<string, unknown>,
+): Record<string, unknown> {
   return {
     id: message.id,
-    error: { code: -32000, message: text },
+    error: { code: -32000, message: text, ...(data ? { data } : {}) },
     ...(message.sessionId ? { sessionId: message.sessionId } : {}),
   };
 }
@@ -1192,6 +1220,9 @@ async function handleRuntimeCommand(socket: WebSocket, message: CdpMessage): Pro
       for (const worldName of worlds?.keys() ?? [""]) {
         send(socket, executionContextEvent(page, message.sessionId, worldName));
       }
+      for (const params of page.consoleMessages) {
+        send(socket, cdpEvent("Runtime.consoleAPICalled", params, message.sessionId));
+      }
       send(socket, cdpResult(message, {}));
       return true;
     }
@@ -1655,6 +1686,36 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
         send(socket, cdpResult(message, {}));
         return;
       default:
+        if (method === "Page.captureScreenshot") {
+          send(
+            socket,
+            cdpError(
+              message,
+              "Unsupported CDP method: Page.captureScreenshot. Alternatives: Page.getDomSummary, Accessibility.getFullAXTree, DOM.getDocument, DOM.getOuterHTML.",
+              {
+                alternatives: [
+                  {
+                    method: "Page.getDomSummary",
+                    description: "Get a compact summary of the page content.",
+                  },
+                  {
+                    method: "Accessibility.getFullAXTree",
+                    description: "Get the page accessibility tree.",
+                  },
+                  {
+                    method: "DOM.getDocument",
+                    description: "Get the page DOM tree.",
+                  },
+                  {
+                    method: "DOM.getOuterHTML",
+                    description: "Get the page HTML.",
+                  },
+                ],
+              },
+            ),
+          );
+          return;
+        }
         send(socket, cdpError(message, `Unsupported CDP method: ${method}`));
     }
   } catch (error) {
@@ -1705,6 +1766,11 @@ function handleAgent(socket: WebSocket): void {
         socket,
         url: message.url ?? "about:blank",
         title: message.title ?? "Remote Page",
+        consoleMessages: previous?.consoleMessages ?? [],
+        pageEventWindowStarted: 0,
+        pageEventCount: 0,
+        consoleEventWindowStarted: 0,
+        consoleEventCount: 0,
       };
       pages.set(pageId, page);
       resolvePageWaiters(page);
@@ -1727,6 +1793,7 @@ function handleAgent(socket: WebSocket): void {
       return;
     }
     if (message.type === "page_event" && page && typeof message.method === "string") {
+      if (!allowPageEvent(page, "page")) return;
       clearPageActionabilityCache(page.pageId);
       if (typeof message.url === "string") page.url = message.url;
       if (typeof message.title === "string") page.title = message.title;
@@ -1749,18 +1816,20 @@ function handleAgent(socket: WebSocket): void {
       return;
     }
     if (message.type === "console" && page) {
-      for (const client of clients) {
-        send(client, {
-          method: "Runtime.consoleAPICalled",
-          params: {
-            type: message.method ?? "log",
-            args: [],
-            executionContextId: 1,
-            timestamp: Date.now(),
-            pageId: page.pageId,
-          },
-        });
-      }
+      if (!allowPageEvent(page, "console")) return;
+      const params = {
+        type: message.method ?? "log",
+        args: (Array.isArray(message.args) ? message.args : []).map((value) => ({
+          type: "string",
+          value: String(value),
+        })),
+        executionContextId: 1,
+        timestamp: Date.now(),
+        pageId: page.pageId,
+      };
+      page.consoleMessages.push(params);
+      if (page.consoleMessages.length > 100) page.consoleMessages.shift();
+      broadcastPageEvent(page.pageId, "Runtime.consoleAPICalled", params);
     }
   });
   socket.on("close", (code, reason) => {

@@ -9,6 +9,7 @@ const defaults = {
   whitelistOrigins: [],
   language: "auto",
   commandHistoryLimit: 50,
+  consoleLevel: "warn",
 };
 const translations = {
   en: {
@@ -30,6 +31,15 @@ const translations = {
     originAdded: "Origin added",
     noPage: "No web page found in the active window",
     invalidPage: "The active page has no valid web origin",
+    consoleLevel: "Console forwarding level",
+    consoleAll: "All messages",
+    consoleWarn: "Warnings and errors",
+    consoleError: "Errors only",
+    consoleOff: "Disabled",
+    testBridge: "Test bridge",
+    testingBridge: "Testing…",
+    bridgeSuccess: "Bridge connection successful",
+    bridgeFailed: "Bridge test failed: ",
   },
   zh: {
     title: "网页操盘手设置",
@@ -50,6 +60,15 @@ const translations = {
     originAdded: "已加入来源",
     noPage: "当前窗口没有找到网页",
     invalidPage: "当前页面没有有效的网页来源",
+    consoleLevel: "Console 转发级别",
+    consoleAll: "全部消息",
+    consoleWarn: "警告和错误",
+    consoleError: "仅错误",
+    consoleOff: "关闭",
+    testBridge: "测试 Bridge 连接",
+    testingBridge: "正在测试…",
+    bridgeSuccess: "Bridge 连接成功",
+    bridgeFailed: "Bridge 测试失败：",
   },
 };
 const form = document.querySelector("#settings");
@@ -59,7 +78,10 @@ const whitelistEnabled = document.querySelector("#whitelistEnabled");
 const whitelistOrigins = document.querySelector("#whitelistOrigins");
 const language = document.querySelector("#language");
 const commandHistoryLimit = document.querySelector("#commandHistoryLimit");
+const consoleLevel = document.querySelector("#consoleLevel");
 const status = document.querySelector("#status");
+const testBridgeButton = document.querySelector("#testBridge");
+const bridgeTestStatus = document.querySelector("#bridgeTestStatus");
 
 function selectedLanguage() {
   return language.value === "zh" || language.value === "en"
@@ -94,10 +116,34 @@ chrome.storage.local.get(defaults).then((values) => {
   whitelistOrigins.value = values.whitelistOrigins.join("\n");
   language.value = values.language;
   commandHistoryLimit.value = values.commandHistoryLimit;
+  consoleLevel.value = values.consoleLevel;
   applyLanguage(values.language);
 });
 
 language.addEventListener("change", () => applyLanguage(language.value));
+
+testBridgeButton.addEventListener("click", async () => {
+  const strings = translations[selectedLanguage()];
+  testBridgeButton.disabled = true;
+  bridgeTestStatus.className = "small text-body-secondary";
+  bridgeTestStatus.textContent = strings.testingBridge;
+  try {
+    const result = await chrome.runtime.sendMessage({
+      type: "test_bridge",
+      bridgeUrl: bridgeUrl.value.trim(),
+      bridgeToken: bridgeToken.value.trim(),
+    });
+    bridgeTestStatus.className = result?.ok ? "small text-success" : "small text-danger";
+    bridgeTestStatus.textContent = result?.ok
+      ? strings.bridgeSuccess
+      : `${strings.bridgeFailed}${result?.error || "Unknown error"}`;
+  } catch (error) {
+    bridgeTestStatus.className = "small text-danger";
+    bridgeTestStatus.textContent = `${strings.bridgeFailed}${error?.message || error}`;
+  } finally {
+    testBridgeButton.disabled = false;
+  }
+});
 
 function originList() {
   return whitelistOrigins.value
@@ -114,6 +160,9 @@ async function saveSettings() {
     whitelistOrigins: originList(),
     language: language.value,
     commandHistoryLimit: Math.max(1, Math.min(200, Number(commandHistoryLimit.value) || 50)),
+    consoleLevel: ["all", "warn", "error", "off"].includes(consoleLevel.value)
+      ? consoleLevel.value
+      : "all",
   });
 }
 

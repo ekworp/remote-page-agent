@@ -40,7 +40,7 @@
     </style>
   </head>
   <body>
-    <main class="shell container-fluid">
+    <main class="shell container-fluid w-100">
       <header class="header d-flex align-items-center justify-content-between gap-2">
         <div class="brand d-flex align-items-center gap-2">
           <img class="logo" src="icons/icon128.png" alt="">
@@ -54,6 +54,7 @@
         <div><div class="status-label" data-i18n="connectionStatus">Connection status</div><div id="connections" class="offline"></div></div>
         <span id="statusDot" class="dot offline" aria-hidden="true"></span>
       </section>
+      <button id="reconnect" class="btn btn-outline-primary w-100 mt-3" type="button" data-i18n="reconnect">Reconnect current page</button>
       <button id="addCurrentOrigin" class="btn btn-primary w-100 mt-3" type="button">Add current page</button>
       <div id="status" role="status" aria-live="polite"></div>
       <div class="section-title d-flex align-items-center justify-content-between"><h2 class="fs-6 mb-0" data-i18n="history">Command history</h2><button id="clear" class="btn btn-outline-secondary" type="button" data-i18n="clear">Clear</button></div>

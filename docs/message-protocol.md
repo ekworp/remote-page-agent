@@ -61,3 +61,16 @@ eval_safe
 - 最大返回长度
 - 审计日志
 - 禁止访问 Cookie、Storage、密码字段等敏感数据的策略
+
+## 页面事件
+
+页面事件通过 `page_event` 消息转发到 CDP 客户端，当前包括：
+
+- `Page.loadEventFired`
+- `Page.lifecycleEvent`
+- `Page.frameNavigated`
+- `Page.navigatedWithinDocument`
+- `Network.online`
+- `Network.offline`
+
+`Network.online` 和 `Network.offline` 是 bridge 提供的状态通知事件，不是需要调用的 CDP 命令。

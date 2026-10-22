@@ -72,13 +72,19 @@ function connect(config: NonNullable<BridgeConnection["config"]>) {
         title: config.title,
       }),
     );
-    notifyBackground({ type: "offscreen_bridge_status", tabId: config.tabId, status: "connected" });
+    notifyBackground({
+      type: "offscreen_bridge_status",
+      tabId: config.tabId,
+      pageId: config.pageId,
+      status: "connected",
+    });
   });
   socket.addEventListener("message", (event) => {
     try {
       notifyBackground({
         type: "offscreen_bridge_message",
         tabId: config.tabId,
+        pageId: config.pageId,
         message: JSON.parse(String(event.data)),
       });
     } catch {
@@ -90,12 +96,56 @@ function connect(config: NonNullable<BridgeConnection["config"]>) {
     notifyBackground({
       type: "offscreen_bridge_status",
       tabId: config.tabId,
+      pageId: config.pageId,
       status: "disconnected",
     });
     scheduleReconnect(config.tabId);
   });
   socket.addEventListener("error", () => {
     // The close event performs the reconnect scheduling.
+  });
+}
+
+function testBridge(message, sendResponse) {
+  const socket = new WebSocket(message.bridgeUrl);
+  let finished = false;
+  const finish = (response) => {
+    if (finished) return;
+    finished = true;
+    window.clearTimeout(timeout);
+    socket.close();
+    sendResponse(response);
+  };
+  const timeout = window.setTimeout(() => {
+    finish({ ok: false, error: "Connection timed out" });
+  }, 5000);
+  socket.addEventListener("open", () => {
+    socket.send(
+      JSON.stringify({
+        type: "hello",
+        browserId: message.browserId,
+        pageId: crypto.randomUUID(),
+        token: message.bridgeToken,
+        url: "about:blank",
+        title: "Bridge test",
+      }),
+    );
+  });
+  socket.addEventListener("message", (event) => {
+    try {
+      const response = JSON.parse(String(event.data));
+      if (response.type !== "hello_ack") return;
+      finish(
+        response.ok === true
+          ? { ok: true }
+          : { ok: false, error: response.error?.message || "Authentication failed" },
+      );
+    } catch {
+      // Ignore malformed test responses.
+    }
+  });
+  socket.addEventListener("error", () => {
+    finish({ ok: false, error: "Unable to connect" });
   });
 }
 
@@ -107,7 +157,11 @@ setInterval(() => {
   }
 }, HEARTBEAT_INTERVAL);
 
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "test_bridge") {
+    testBridge(message, sendResponse);
+    return true;
+  }
   if (message?.type === "connect_bridge") {
     disconnect(message.tabId);
     connect({
