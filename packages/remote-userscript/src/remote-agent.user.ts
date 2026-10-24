@@ -1033,6 +1033,20 @@ function accessibilityName(element: Element): string {
   return normalizeAccessibilityName(element instanceof HTMLElement ? element.innerText : "");
 }
 
+function isInert(element: Element): boolean {
+  let current: Element | null = element;
+  while (current) {
+    if (current.hasAttribute("inert")) return true;
+    if (current.parentElement) {
+      current = current.parentElement;
+    } else {
+      const root = current.getRootNode();
+      current = root instanceof ShadowRoot ? root.host : null;
+    }
+  }
+  return false;
+}
+
 function normalizeAccessibilityName(value: string, maxLength = 500): string {
   return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
@@ -1042,6 +1056,7 @@ function isHiddenFromAccessibilityTree(element: Element): boolean {
   if (element.hasAttribute("hidden") || element.getAttribute("aria-hidden") === "true") {
     return true;
   }
+  if (isInert(element)) return true;
   const checkVisibility = (
     element as Element & {
       checkVisibility?: (options?: {
@@ -1067,6 +1082,21 @@ function isHiddenFromAccessibilityTree(element: Element): boolean {
 
 function isTransparentAccessibilityNode(role: string, name: string): boolean {
   return !name && (role === "generic" || role === "none" || role === "presentation");
+}
+
+function isInteractiveAccessibilityRole(role: string): boolean {
+  return [
+    "button",
+    "checkbox",
+    "combobox",
+    "link",
+    "radio",
+    "searchbox",
+    "slider",
+    "spinbutton",
+    "switch",
+    "textbox",
+  ].includes(role);
 }
 
 function hasInteractiveDescendant(element: Element): boolean {
@@ -1144,6 +1174,10 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
   const maxNodes = 3000;
   const nodes: AccessibilityNode[] = [];
   const nodesById = new Map<string, AccessibilityNode>();
+  const childrenFor = (element: Element): Element[] => [
+    ...Array.from(element.children),
+    ...(element.shadowRoot ? Array.from(element.shadowRoot.children) : []),
+  ];
   const visit = (element: Element, level: number): string[] => {
     if (element.closest("[data-remote-page-agent]")) return [];
     if (isHiddenFromAccessibilityTree(element) || nodes.length >= maxNodes) return [];
@@ -1154,9 +1188,17 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
     const role = accessibilityRole(element);
     if (isDecorativeAccessibilityElement(element, role, name)) return [];
     if (level < depth) {
-      for (const child of Array.from(element.children)) {
+      for (const child of childrenFor(element)) {
         if (nodes.length >= maxNodes) break;
         children.push(...visit(child, level + 1));
+      }
+    }
+    if (isInteractiveAccessibilityRole(role)) {
+      for (const childId of children.slice()) {
+        const child = nodesById.get(childId);
+        if (child?.role.value === "generic" && child.name?.value === name) {
+          children.splice(children.indexOf(childId), 1, ...child.childIds);
+        }
       }
     }
     // Layout-only wrappers are common on search pages. Flatten them while

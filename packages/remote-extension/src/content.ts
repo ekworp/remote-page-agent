@@ -127,9 +127,28 @@ function roleFor(element) {
   return "generic";
 }
 
+function isInteractiveRole(role) {
+  return [
+    "button",
+    "checkbox",
+    "combobox",
+    "link",
+    "radio",
+    "searchbox",
+    "slider",
+    "spinbutton",
+    "switch",
+    "textbox",
+  ].includes(role);
+}
+
 function nameFor(element) {
   const label =
     element.getAttribute("aria-label") ||
+    (element.getAttribute("aria-labelledby") || "")
+      .split(/\s+/)
+      .map((id) => document.getElementById(id)?.textContent || "")
+      .join(" ") ||
     element.getAttribute("alt") ||
     element.getAttribute("title");
   if (label) return label.replace(/\s+/g, " ").trim().slice(0, 500);
@@ -157,11 +176,42 @@ function propertiesFor(element) {
   const add = (name, value) => properties.push({ name, value: { type: typeof value, value } });
   const expanded = element.getAttribute("aria-expanded");
   const disabled = element.getAttribute("aria-disabled");
+  const checked = element.getAttribute("aria-checked");
+  const selected = element.getAttribute("aria-selected");
   if (expanded === "true" || expanded === "false") add("expanded", expanded === "true");
+  if (checked === "true" || checked === "false") add("checked", checked === "true");
+  if (selected === "true" || selected === "false") add("selected", selected === "true");
   if (disabled === "true" || ("disabled" in element && element.disabled)) add("disabled", true);
   if (element instanceof HTMLAnchorElement && element.href) add("url", element.href);
+  if (/^H[1-6]$/.test(element.tagName)) add("level", Number(element.tagName.slice(1)));
   if (element instanceof HTMLElement && element.tabIndex >= 0) add("focusable", true);
+  if (element instanceof HTMLInputElement && element.type !== "password" && element.value) {
+    add("value", element.value);
+  } else if (element instanceof HTMLTextAreaElement && element.value) {
+    add("value", element.value);
+  } else if (element instanceof HTMLSelectElement && element.value) {
+    add("value", element.value);
+  }
+  if (
+    element instanceof HTMLInputElement &&
+    (element.type === "checkbox" || element.type === "radio")
+  ) {
+    add("checked", element.checked);
+  }
   return properties;
+}
+
+function isInert(element) {
+  for (let current = element; current; ) {
+    if (current.hasAttribute?.("inert")) return true;
+    if (current.parentElement) {
+      current = current.parentElement;
+    } else {
+      const root = current.getRootNode?.();
+      current = root?.host || null;
+    }
+  }
+  return false;
 }
 
 function isHiddenFromAccessibilityTree(element) {
@@ -169,6 +219,7 @@ function isHiddenFromAccessibilityTree(element) {
   if (element.hasAttribute("hidden") || element.getAttribute("aria-hidden") === "true") {
     return true;
   }
+  if (isInert(element)) return true;
   const checkVisibility = element.checkVisibility;
   if (typeof checkVisibility === "function") {
     return !checkVisibility.call(element, {
@@ -190,6 +241,10 @@ function accessibilityTree() {
   pruneBackendNodes();
   const nodes = [];
   const maxNodes = 3000;
+  const childrenFor = (element) => [
+    ...Array.from(element.children),
+    ...(element.shadowRoot ? Array.from(element.shadowRoot.children) : []),
+  ];
   const visit = (element, level) => {
     if (nodes.length >= maxNodes) return [];
     if (!(element instanceof Element) || isHiddenFromAccessibilityTree(element)) return [];
@@ -197,9 +252,21 @@ function accessibilityTree() {
     const role = roleFor(element);
     const name = nameFor(element);
     const childIds =
-      level >= 32 ? [] : Array.from(element.children).flatMap((child) => visit(child, level + 1));
+      level >= 32 ? [] : childrenFor(element).flatMap((child) => visit(child, level + 1));
+    if (isInteractiveRole(role)) {
+      for (const childId of childIds.slice()) {
+        const child = nodes.find((candidate) => candidate.nodeId === childId);
+        if (child?.role?.value === "generic" && child.name?.value === name) {
+          childIds.splice(childIds.indexOf(childId), 1, ...(child.childIds || []));
+        }
+      }
+    }
     if (!name && (role === "generic" || role === "none" || role === "presentation"))
       return childIds;
+    if ((role === "generic" || role === "none") && childIds.length === 1) {
+      const onlyChild = nodes.find((candidate) => candidate.nodeId === childIds[0]);
+      if (onlyChild?.name?.value === name) return childIds;
+    }
     const node = {
       nodeId: id,
       backendNodeId: Number(id),
@@ -310,6 +377,7 @@ function isEditable(element) {
 
 function fillElement(element, value) {
   if (!isEditable(element)) throw new Error("Element is not editable");
+  element.focus();
   if (
     element instanceof HTMLInputElement &&
     (element.type === "checkbox" || element.type === "radio")
@@ -378,8 +446,11 @@ function clickByText(text) {
 
 function dispatchInput(payload) {
   const selector = typeof payload.selector === "string" ? payload.selector : "";
+  const keyboardInput =
+    payload.type === "keyDown" || payload.type === "keyUp" || payload.type === "char";
   const element =
     (selector ? document.querySelector(selector) : null) ||
+    (keyboardInput && document.activeElement instanceof Element ? document.activeElement : null) ||
     document.elementFromPoint(Number(payload.x ?? 0), Number(payload.y ?? 0)) ||
     document.body;
   if (!(element instanceof Element)) throw new Error("input target not found");
