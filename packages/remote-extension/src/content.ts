@@ -164,6 +164,27 @@ function propertiesFor(element) {
   return properties;
 }
 
+function isHiddenFromAccessibilityTree(element) {
+  if (element instanceof HTMLInputElement && element.type === "hidden") return true;
+  if (element.hasAttribute("hidden") || element.getAttribute("aria-hidden") === "true") {
+    return true;
+  }
+  const checkVisibility = element.checkVisibility;
+  if (typeof checkVisibility === "function") {
+    return !checkVisibility.call(element, {
+      checkOpacity: false,
+      checkVisibilityCSS: true,
+    });
+  }
+  const style = getComputedStyle(element);
+  return (
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    style.visibility === "collapse" ||
+    style.contentVisibility === "hidden"
+  );
+}
+
 function accessibilityTree() {
   if (accessibilityTreeCache) return accessibilityTreeCache;
   pruneBackendNodes();
@@ -171,12 +192,7 @@ function accessibilityTree() {
   const maxNodes = 3000;
   const visit = (element, level) => {
     if (nodes.length >= maxNodes) return [];
-    if (
-      !(element instanceof Element) ||
-      element.hasAttribute("hidden") ||
-      element.getAttribute("aria-hidden") === "true"
-    )
-      return [];
+    if (!(element instanceof Element) || isHiddenFromAccessibilityTree(element)) return [];
     const id = String(backendNodeIdFor(element));
     const role = roleFor(element);
     const name = nameFor(element);
@@ -435,7 +451,29 @@ function safeEvaluation(code) {
   throw new Error("This page blocks dynamic JavaScript evaluation; use a fixed command instead.");
 }
 
-function commandResult(message) {
+function waitForStableDom(quietMs = 100) {
+  const delay = Math.max(0, Math.min(Number.isFinite(quietMs) ? quietMs : 100, 5000));
+  return new Promise((resolve) => {
+    let timer = 0;
+    const observer = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(done, delay);
+    });
+    function done() {
+      clearTimeout(timer);
+      observer.disconnect();
+      resolve({ stable: true, quietMs: delay });
+    }
+    timer = setTimeout(done, delay);
+    observer.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
+  });
+}
+
+async function commandResult(message) {
   const payload = message.payload || {};
   switch (message.type) {
     case "get_page_info":
@@ -467,6 +505,8 @@ function commandResult(message) {
       return { x: window.scrollX, y: window.scrollY };
     case "get_dom_summary":
       return domSummary();
+    case "wait_for_stable_dom":
+      return await waitForStableDom(Number(payload.quietMs ?? 100));
     case "get_accessibility_tree":
       return accessibilityTree();
     case "navigate":
@@ -573,13 +613,19 @@ function commandResult(message) {
           return { focused: true, ...describeElement(editableTarget(source)) };
         case "get_value":
           return editableTarget(source).value ?? editableTarget(source).innerText ?? "";
-        case "get_input_kind":
-          if (source instanceof HTMLSelectElement) return "select";
-          if (source instanceof HTMLTextAreaElement) return "typeable-input";
-          if (source instanceof HTMLInputElement) return source.type;
-          return source instanceof HTMLElement && source.isContentEditable
+        case "get_input_kind": {
+          const editable = editableTarget(source);
+          if (editable instanceof HTMLSelectElement) return "select";
+          if (editable instanceof HTMLTextAreaElement) return "typeable-input";
+          if (editable instanceof HTMLInputElement) {
+            return editable.type === "checkbox" || editable.type === "radio"
+              ? "checkable-input"
+              : "typeable-input";
+          }
+          return editable instanceof HTMLElement && editable.isContentEditable
             ? "contenteditable"
             : "unsupported";
+        }
         case "get_enabled":
           return !editableTarget(source).disabled;
         case "is_checkable":
@@ -652,7 +698,16 @@ chrome.runtime.onMessage.addListener((message) => {
   if (request.type === "hello_ack") return;
   if (typeof request.id !== "string") return;
   try {
-    send({ id: request.id, type: request.type, ok: true, result: commandResult(request) });
+    void Promise.resolve(commandResult(request)).then(
+      (result) => send({ id: request.id, type: request.type, ok: true, result }),
+      (error) =>
+        send({
+          id: request.id,
+          type: request.type,
+          ok: false,
+          error: { message: error instanceof Error ? error.message : String(error) },
+        }),
+    );
   } catch (error) {
     send({
       id: request.id,

@@ -1057,7 +1057,12 @@ function isHiddenFromAccessibilityTree(element: Element): boolean {
     });
   }
   const style = getComputedStyle(element);
-  return style.display === "none" || style.visibility === "hidden";
+  return (
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    style.visibility === "collapse" ||
+    style.contentVisibility === "hidden"
+  );
 }
 
 function isTransparentAccessibilityNode(role: string, name: string): boolean {
@@ -2048,6 +2053,28 @@ function dispatchInput(payload: Record<string, unknown>): Record<string, unknown
   return result;
 }
 
+function waitForStableDom(quietMs = 100): Promise<Record<string, unknown>> {
+  const delay = Math.max(0, Math.min(Number.isFinite(quietMs) ? quietMs : 100, 5_000));
+  return new Promise((resolve) => {
+    let timer = 0;
+    const observer = new MutationObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(done, delay);
+    });
+    function done(): void {
+      window.clearTimeout(timer);
+      observer.disconnect();
+      resolve({ stable: true, quietMs: delay });
+    }
+    timer = window.setTimeout(done, delay);
+    observer.observe(document.body ?? document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
+  });
+}
+
 async function execute(request: AgentRequest): Promise<void> {
   const payload = request.payload ?? {};
   switch (request.type) {
@@ -2136,6 +2163,9 @@ async function execute(request: AgentRequest): Promise<void> {
     }
     case "get_dom_summary":
       response(request.id, domSummary());
+      return;
+    case "wait_for_stable_dom":
+      response(request.id, await waitForStableDom(Number(payload.quietMs ?? 100)));
       return;
     case "navigate": {
       if (typeof payload.url !== "string") {

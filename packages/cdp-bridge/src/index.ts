@@ -127,6 +127,7 @@ const domHandles = new Map<string, number>();
 const pollerHandles = new Set<string>();
 const pollerResults = new Map<string, boolean>();
 const fakeObjectHandles = new Set<string>();
+const stableDomHandles = new Set<string>();
 const actionabilityCache = new Map<string, { value: boolean; expiresAt: number }>();
 const actionabilityCacheTtlMs = 2_500;
 const executionContextIds = new Map<string, Map<string, number>>();
@@ -1213,6 +1214,7 @@ async function handleRuntimeCommand(socket: WebSocket, message: CdpMessage): Pro
         domHandles.delete(objectId);
         pollerHandles.delete(objectId);
         fakeObjectHandles.delete(objectId);
+        stableDomHandles.delete(objectId);
       }
       send(socket, cdpResult(message, {}));
       return true;
@@ -1260,6 +1262,24 @@ async function handleRuntimeCommand(socket: WebSocket, message: CdpMessage): Pro
       const expression = message.params?.expression;
       if (typeof expression !== "string") throw new Error("expression is required");
       const page = pageForMessage(message);
+      if (expression.includes("MutationObserver") && expression.includes("Promise.withResolvers")) {
+        const result = await requestAgent(page, "wait_for_stable_dom", { quietMs: 100 });
+        if (!result.ok) throw new Error(result.error?.message ?? "DOM stability wait failed");
+        const objectId = `stable-dom:${randomUUID()}`;
+        stableDomHandles.add(objectId);
+        send(
+          socket,
+          cdpResult(message, {
+            result: {
+              type: "object",
+              className: "Object",
+              objectId,
+              description: "Stable DOM wait",
+            },
+          }),
+        );
+        return true;
+      }
       if (/RAFPoller|IntervalPoller|MutationPoller/.test(expression)) {
         const objectId = `puppeteer-util:${randomUUID()}`;
         fakeObjectHandles.add(objectId);
@@ -1304,6 +1324,16 @@ async function handleRuntimeCommand(socket: WebSocket, message: CdpMessage): Pro
       const argumentsList = Array.isArray(message.params?.arguments)
         ? (message.params.arguments as CdpArgument[])
         : [];
+      if (
+        (typeof objectId === "string" && stableDomHandles.has(objectId)) ||
+        argumentsList.some(
+          (argument) =>
+            typeof argument.objectId === "string" && stableDomHandles.has(argument.objectId),
+        )
+      ) {
+        send(socket, cdpResult(message, { result: { type: "undefined" } }));
+        return true;
+      }
       const domBackendNodeId = domHandleForCall(message, argumentsList)?.backendNodeId;
       const domResult = await tryHandleDomCall(message, page, functionDeclaration, argumentsList);
       logDomDebug("callFunctionOn", {
