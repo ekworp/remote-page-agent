@@ -466,6 +466,16 @@ function dispatchInput(payload) {
         },
       ),
     );
+    if (payload.type === "keyDown" && payload.key === "Enter") {
+      const form = element.closest("form");
+      if (form instanceof HTMLFormElement) {
+        if (typeof form.requestSubmit === "function") form.requestSubmit();
+        else form.submit();
+      } else if (element instanceof HTMLInputElement) {
+        const submit = document.querySelector("button[type=submit], input[type=submit]");
+        submit?.click();
+      }
+    }
   } else if (payload.type === "mouseMoved") {
     element.dispatchEvent(
       new MouseEvent("mousemove", {
