@@ -31,7 +31,10 @@ const publicOrigin = (
 ).replace(/\/$/, "");
 const require = createRequire(import.meta.url);
 const appVersion = (require("../package.json") as { version: string }).version;
-const backendBrowserId = randomUUID();
+// Keep the browser endpoint stable across bridge restarts so CDP clients can
+// reconnect using a cached /json/version WebSocket URL. A custom ID is useful
+// when several bridge instances are exposed through different addresses.
+const backendBrowserId = process.env.REMOTE_AGENT_BROWSER_ID?.trim() || "remote-page-agent";
 const remoteAgentToken = process.env.REMOTE_AGENT_TOKEN ?? dotEnv.REMOTE_AGENT_TOKEN ?? "";
 
 function positiveNumber(value: string | undefined, fallback: number): number {

@@ -52,7 +52,12 @@ get_console
 get_dom_summary
 eval_safe
 wait_for_stable_dom
+close_page
 ```
+
+`close_page` closes the current browser page. The extension uses the browser
+tab API; the userscript requests `window.close()`, which browsers may reject
+for tabs that were not opened by script.
 
 `wait_for_stable_dom` waits until the page has had no DOM mutations for the
 requested quiet period, then returns `{ "stable": true, "timedOut": false, "quietMs": 100 }`.

@@ -394,6 +394,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }
+  if (message?.type === "grant_navigation") {
+    const tabId = sender.tab?.id;
+    if (
+      typeof tabId !== "number" ||
+      typeof message.url !== "string" ||
+      typeof message.pageId !== "string"
+    ) {
+      sendResponse({ ok: false, error: "Invalid navigation grant" });
+      return false;
+    }
+    addTemporaryGrant(message.url, message.pageId)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+  if (message?.type === "close_page") {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== "number") {
+      sendResponse({ ok: false, error: "No sender tab" });
+      return false;
+    }
+    sendResponse({ ok: true });
+    setTimeout(() => {
+      void chrome.tabs.remove(tabId).catch(() => {});
+    }, 0);
+    return false;
+  }
   if (message?.type === "offscreen_bridge_status") {
     let connection = connections.get(message.tabId);
     if (!connection && typeof message.pageId === "string") {

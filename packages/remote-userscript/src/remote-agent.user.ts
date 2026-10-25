@@ -612,6 +612,14 @@ function addTemporaryGrant(url: string, targetPageId: string): void {
   GM_setValue(temporaryGrantStorageKey, grants);
 }
 
+function grantNavigationForClick(element: Element): void {
+  const anchor = element.closest("a[href]");
+  if (!(anchor instanceof HTMLAnchorElement)) return;
+  const origin = normalizeOrigin(anchor.href);
+  if (!origin || origin === normalizeOrigin(location.origin)) return;
+  addTemporaryGrant(anchor.href, pageId);
+}
+
 function touchTemporaryGrant(): void {
   if (!whitelistEnabled()) return;
   const now = Date.now();
@@ -1815,11 +1823,11 @@ function insertText(element: Element, text: string): Record<string, unknown> {
   throw new Error("Active element does not support text insertion");
 }
 
-function domOperation(
+async function domOperation(
   operation: string,
   backendNodeId: number,
   payload: Record<string, unknown>,
-): unknown {
+): Promise<unknown> {
   if (operation === "document_size") {
     return {
       documentWidth: document.documentElement?.clientWidth ?? window.innerWidth,
@@ -1834,6 +1842,7 @@ function domOperation(
     case "click": {
       const target = prepareClickTarget(element);
       const anchor = target.closest("a[href]");
+      grantNavigationForClick(target);
       const scheduled = clickMayNavigate(target);
       if (scheduled) scheduleElementClick(element);
       else dispatchElementClick(target);
@@ -2144,6 +2153,7 @@ async function execute(request: AgentRequest): Promise<void> {
       {
         const element = selector(payload);
         const target = prepareClickTarget(element);
+        grantNavigationForClick(target);
         const scheduled = clickMayNavigate(target);
         if (scheduled) scheduleElementClick(element);
         else dispatchElementClick(target);
@@ -2168,6 +2178,7 @@ async function execute(request: AgentRequest): Promise<void> {
         );
       if (!(element instanceof Element)) throw new Error(`text not found: ${text}`);
       const target = prepareClickTarget(element);
+      grantNavigationForClick(target);
       const scheduled = clickMayNavigate(target);
       if (scheduled) scheduleElementClick(element);
       else dispatchElementClick(target);
@@ -2234,6 +2245,10 @@ async function execute(request: AgentRequest): Promise<void> {
       }, 0);
       return;
     }
+    case "close_page":
+      response(request.id, { closing: true });
+      window.setTimeout(() => window.close(), 0);
+      return;
     case "open_page": {
       if (typeof payload.url !== "string" || typeof payload.pageId !== "string") {
         throw new Error("url and pageId are required");

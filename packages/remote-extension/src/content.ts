@@ -331,6 +331,14 @@ function clickTarget(element) {
   );
 }
 
+async function grantNavigationForClick(element) {
+  const anchor = element.closest("a[href]");
+  if (!(anchor instanceof HTMLAnchorElement)) return;
+  const url = new URL(anchor.href, location.href);
+  if (url.protocol !== "http:" && url.protocol !== "https:") return;
+  await chrome.runtime.sendMessage({ type: "grant_navigation", url: url.href, pageId });
+}
+
 function describeElement(element) {
   return {
     backendNodeId: backendNodeIdFor(element),
@@ -581,11 +589,23 @@ async function commandResult(message) {
       if (!element) throw new Error(`Element not found: ${payload.selector}`);
       const target = clickTarget(element);
       target.scrollIntoView({ block: "center", inline: "center" });
+      await grantNavigationForClick(target);
       target.click();
       return { clicked: true, ...describeElement(target) };
     }
-    case "click_text":
-      return clickByText(String(payload.text || "").trim());
+    case "click_text": {
+      const text = String(payload.text || "").trim();
+      const candidate = Array.from(
+        document.querySelectorAll(
+          "a[href], button, input, textarea, select, [role=button], [role=link]",
+        ),
+      ).find(
+        (element) =>
+          element.innerText?.trim() === text || element.getAttribute("aria-label") === text,
+      );
+      if (candidate) await grantNavigationForClick(clickTarget(candidate));
+      return clickByText(text);
+    }
     case "input": {
       const element = editableTarget(document.querySelector(String(payload.selector || "")));
       if (!element) throw new Error(`Element not found: ${payload.selector}`);
@@ -611,6 +631,11 @@ async function commandResult(message) {
         location.href = payload.url;
       }, 0);
       return { url: payload.url };
+    case "close_page": {
+      const result = await chrome.runtime.sendMessage({ type: "close_page" });
+      if (!result?.ok) throw new Error(result?.error || "Unable to close the page");
+      return { closing: true };
+    }
     case "history_back":
       setTimeout(() => history.back(), 0);
       return { ok: true };
@@ -625,6 +650,7 @@ async function commandResult(message) {
     case "click_backend_node": {
       const target = clickTarget(elementByBackendNodeId(payload.backendNodeId));
       target.scrollIntoView({ block: "center", inline: "center" });
+      await grantNavigationForClick(target);
       target.click();
       return {
         clicked: true,
@@ -668,6 +694,7 @@ async function commandResult(message) {
       switch (payload.operation) {
         case "click":
           element.scrollIntoView({ block: "center", inline: "center" });
+          await grantNavigationForClick(element);
           element.click();
           return {
             clicked: true,
