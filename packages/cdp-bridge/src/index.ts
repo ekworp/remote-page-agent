@@ -126,7 +126,6 @@ const functionHandles = new Map<string, string>();
 const domHandles = new Map<string, number>();
 const pollerHandles = new Set<string>();
 const pollerResults = new Map<string, boolean>();
-const fakeObjectHandles = new Set<string>();
 const stableDomHandles = new Set<string>();
 const actionabilityCache = new Map<string, { value: boolean; expiresAt: number }>();
 const actionabilityCacheTtlMs = 2_500;
@@ -1213,7 +1212,6 @@ async function handleRuntimeCommand(socket: WebSocket, message: CdpMessage): Pro
         functionHandles.delete(objectId);
         domHandles.delete(objectId);
         pollerHandles.delete(objectId);
-        fakeObjectHandles.delete(objectId);
         stableDomHandles.delete(objectId);
       }
       send(socket, cdpResult(message, {}));
@@ -1285,7 +1283,6 @@ async function handleRuntimeCommand(socket: WebSocket, message: CdpMessage): Pro
       }
       if (/RAFPoller|IntervalPoller|MutationPoller/.test(expression)) {
         const objectId = `puppeteer-util:${randomUUID()}`;
-        fakeObjectHandles.add(objectId);
         send(
           socket,
           cdpResult(message, {
