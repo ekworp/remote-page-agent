@@ -1,7 +1,7 @@
 // @ts-nocheck
 
-const nodesById = new Map();
-const idsByNode = new WeakMap();
+let nodesById = new Map();
+let idsByNode = new WeakMap();
 let nextBackendNodeId = 1;
 let accessibilityTreeCache: unknown[] | undefined;
 const CONSOLE_MESSAGE_TYPE = "remote-page-agent-console";
@@ -532,21 +532,33 @@ function safeEvaluation(code) {
   throw new Error("This page blocks dynamic JavaScript evaluation; use a fixed command instead.");
 }
 
-function waitForStableDom(quietMs = 100) {
+function waitForStableDom(quietMs = 100, maxWaitMs = 3000) {
   const delay = Math.max(0, Math.min(Number.isFinite(quietMs) ? quietMs : 100, 5000));
+  const deadline = Math.max(250, Math.min(Number.isFinite(maxWaitMs) ? maxWaitMs : 3000, 10000));
   return new Promise((resolve) => {
     let timer = 0;
+    let deadlineTimer = 0;
+    let finished = false;
     const observer = new MutationObserver(() => {
       clearTimeout(timer);
       timer = setTimeout(done, delay);
     });
-    function done() {
+    function finish(stable) {
+      if (finished) return;
+      finished = true;
       clearTimeout(timer);
+      clearTimeout(deadlineTimer);
       observer.disconnect();
-      resolve({ stable: true, quietMs: delay });
+      resolve({ stable, timedOut: !stable, quietMs: delay });
     }
+    function done() {
+      finish(true);
+    }
+    deadlineTimer = setTimeout(() => finish(false), deadline);
     timer = setTimeout(done, delay);
-    observer.observe(document.body || document.documentElement, {
+    const target = document.body || document.documentElement;
+    if (!target) return finish(false);
+    observer.observe(target, {
       childList: true,
       subtree: true,
       attributes: true,
@@ -587,7 +599,10 @@ async function commandResult(message) {
     case "get_dom_summary":
       return domSummary();
     case "wait_for_stable_dom":
-      return await waitForStableDom(Number(payload.quietMs ?? 100));
+      return await waitForStableDom(
+        Number(payload.quietMs ?? 100),
+        Number(payload.maxWaitMs ?? 3000),
+      );
     case "get_accessibility_tree":
       return accessibilityTree();
     case "navigate":
@@ -818,6 +833,7 @@ function announce() {
   if (location.href === lastAnnouncedUrl && document.title === lastAnnouncedTitle) return;
   lastAnnouncedUrl = location.href;
   lastAnnouncedTitle = document.title;
+  resetDomState();
   pageEvent("Page.frameNavigated", {
     frame: { id: pageId || location.href, url: location.href },
   });
@@ -833,6 +849,7 @@ function announceNavigation() {
   if (!bridgeReady) return;
   if (location.href === lastAnnouncedUrl && document.title === lastAnnouncedTitle) return;
   const frameId = pageId || location.href;
+  resetDomState();
   pageEvent("Page.frameNavigated", {
     frame: {
       id: frameId,
@@ -850,6 +867,13 @@ function announceNavigation() {
   });
   lastAnnouncedUrl = location.href;
   lastAnnouncedTitle = document.title;
+}
+
+function resetDomState() {
+  nodesById = new Map();
+  idsByNode = new WeakMap();
+  nextBackendNodeId = 1;
+  accessibilityTreeCache = undefined;
 }
 
 window.addEventListener(

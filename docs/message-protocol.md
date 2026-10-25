@@ -55,9 +55,11 @@ wait_for_stable_dom
 ```
 
 `wait_for_stable_dom` waits until the page has had no DOM mutations for the
-requested quiet period, then returns `{ "stable": true, "quietMs": 100 }`.
-The client clamps the period to a safe range and uses a fixed
-`MutationObserver` implementation; it does not evaluate caller-supplied code.
+requested quiet period, then returns `{ "stable": true, "timedOut": false, "quietMs": 100 }`.
+It also accepts an optional `maxWaitMs` hard deadline. If the deadline is
+reached first, it returns `stable: false` and `timedOut: true`. The client
+clamps both periods to safe ranges and uses a fixed `MutationObserver`
+implementation; it does not evaluate caller-supplied code.
 
 `eval_safe` 不建议一开始接受任意代码。优先实现固定命令；如果确实需要任意 JS，至少增加：
 

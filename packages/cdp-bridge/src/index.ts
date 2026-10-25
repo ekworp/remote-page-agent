@@ -1263,7 +1263,10 @@ async function handleRuntimeCommand(socket: WebSocket, message: CdpMessage): Pro
       if (typeof expression !== "string") throw new Error("expression is required");
       const page = pageForMessage(message);
       if (expression.includes("MutationObserver") && expression.includes("Promise.withResolvers")) {
-        const result = await requestAgent(page, "wait_for_stable_dom", { quietMs: 100 });
+        const result = await requestAgent(page, "wait_for_stable_dom", {
+          quietMs: 100,
+          maxWaitMs: 3_000,
+        });
         if (!result.ok) throw new Error(result.error?.message ?? "DOM stability wait failed");
         const objectId = `stable-dom:${randomUUID()}`;
         stableDomHandles.add(objectId);

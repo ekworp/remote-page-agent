@@ -2095,21 +2095,33 @@ function dispatchInput(payload: Record<string, unknown>): Record<string, unknown
   return result;
 }
 
-function waitForStableDom(quietMs = 100): Promise<Record<string, unknown>> {
+function waitForStableDom(quietMs = 100, maxWaitMs = 3000): Promise<Record<string, unknown>> {
   const delay = Math.max(0, Math.min(Number.isFinite(quietMs) ? quietMs : 100, 5_000));
+  const deadline = Math.max(250, Math.min(Number.isFinite(maxWaitMs) ? maxWaitMs : 3000, 10_000));
   return new Promise((resolve) => {
     let timer = 0;
+    let deadlineTimer = 0;
+    let finished = false;
     const observer = new MutationObserver(() => {
       window.clearTimeout(timer);
       timer = window.setTimeout(done, delay);
     });
-    function done(): void {
+    function finish(stable: boolean): void {
+      if (finished) return;
+      finished = true;
       window.clearTimeout(timer);
+      window.clearTimeout(deadlineTimer);
       observer.disconnect();
-      resolve({ stable: true, quietMs: delay });
+      resolve({ stable, timedOut: !stable, quietMs: delay });
     }
+    function done(): void {
+      finish(true);
+    }
+    deadlineTimer = window.setTimeout(() => finish(false), deadline);
     timer = window.setTimeout(done, delay);
-    observer.observe(document.body ?? document.documentElement, {
+    const target = document.body ?? document.documentElement;
+    if (!target) return finish(false);
+    observer.observe(target, {
       childList: true,
       subtree: true,
       attributes: true,
@@ -2207,7 +2219,10 @@ async function execute(request: AgentRequest): Promise<void> {
       response(request.id, domSummary());
       return;
     case "wait_for_stable_dom":
-      response(request.id, await waitForStableDom(Number(payload.quietMs ?? 100)));
+      response(
+        request.id,
+        await waitForStableDom(Number(payload.quietMs ?? 100), Number(payload.maxWaitMs ?? 3000)),
+      );
       return;
     case "navigate": {
       if (typeof payload.url !== "string") {
