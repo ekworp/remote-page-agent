@@ -4,7 +4,7 @@ export {};
 
 const translations = {
   en: {
-    title: "Remote Page Agent",
+    title: "Remote DevTools",
     subtitle: "Remote browser control",
     settings: "Settings",
     version: "Version",
@@ -22,7 +22,7 @@ const translations = {
     reconnected: "Reconnect requested",
   },
   zh: {
-    title: "网页操盘手",
+    title: "Remote DevTools",
     subtitle: "远程控制浏览器页面",
     settings: "连接设置",
     version: "版本",

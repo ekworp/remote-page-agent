@@ -13,7 +13,7 @@ const defaults = {
 };
 const translations = {
   en: {
-    title: "Remote Page Agent settings",
+    title: "Remote DevTools settings",
     intro: "Configure the bridge connection and the pages it can access.",
     connectionSection: "Connection",
     connectionDescription: "Set the WebSocket bridge used by the extension.",
@@ -39,7 +39,7 @@ const translations = {
     bridgeFailed: "Bridge test failed: ",
   },
   zh: {
-    title: "网页操盘手设置",
+    title: "Remote DevTools 设置",
     intro: "设置中转服务器地址，并管理可访问的网页。",
     connectionSection: "连接设置",
     connectionDescription: "设置扩展使用的 WebSocket 桥接地址。",

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none" role="img" aria-labelledby="rpa-title rpa-desc">
-  <title id="rpa-title">Remote Page Agent 图标</title>
+  <title id="rpa-title">Remote DevTools 图标</title>
   <desc id="rpa-desc">深靛蓝色圆角背景上，一枚蓝紫色浏览器窗口与白色指针，右上角的连接节点代表远程控制。</desc>
   <defs>
     <linearGradient id="rpa-bg" x1="24" y1="16" x2="232" y2="256" gradientUnits="userSpaceOnUse">

@@ -1,10 +1,10 @@
-# 网页操盘手 | Remote Page Agent
+# Remote DevTools
 
-![Remote Page Agent](assets/remote-page-agent.svg)
+![Remote DevTools](assets/remote-devtools.svg)
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-网页操盘手（Remote Page Agent） lets an agent remotely control browser pages. A userscript or Chromium MV3 extension communicates with a small Node.js bridge over WebSocket. The bridge exposes a limited CDP endpoint, so CDP clients can connect without enabling Chrome remote debugging in the browser.
+Remote DevTools lets an agent remotely control browser pages. A userscript or Chromium MV3 extension communicates with a small Node.js bridge over WebSocket. The bridge exposes a limited CDP endpoint, so CDP clients can connect without enabling Chrome remote debugging in the browser.
 
 This is an early prototype. Do not expose it directly to the public internet.
 
@@ -61,17 +61,17 @@ You need Node.js 20 or newer and pnpm.
 pnpm install
 pnpm build
 pnpm check
-pnpm --filter @remote-page-agent/cdp-bridge start
+pnpm --filter @remote-devtools/cdp-bridge start
 ```
 
 The bridge listens on port `9222` by default. To allow a phone on the same LAN to connect:
 
 ```bash
 HOST=0.0.0.0 PUBLIC_HOST=192.168.1.10 \
-  pnpm --filter @remote-page-agent/cdp-bridge start
+  pnpm --filter @remote-devtools/cdp-bridge start
 ```
 
-For the userscript, install `packages/remote-userscript/dist/remote-agent.user.js` in Tampermonkey or another userscript manager. Open the script menu and choose **Configure Remote Page Agent**. The default URL is `ws://localhost:9222/agent`. The same dialog configures the Console forwarding level. If the bridge runs on another device, replace `localhost` with that device's LAN address.
+For the userscript, install `packages/remote-userscript/dist/remote-agent.user.js` in Tampermonkey or another userscript manager. Open the script menu and choose **Configure Remote DevTools**. The default URL is `ws://localhost:9222/agent`. The same dialog configures the Console forwarding level. If the bridge runs on another device, replace `localhost` with that device's LAN address.
 
 For Chromium, load `packages/remote-extension/dist/extension/` as an unpacked Manifest V3 extension and configure the Bridge URL, token, and Console forwarding level on the Options page. The popup provides current-page status and manual reconnect.
 

@@ -4,8 +4,8 @@ let nodesById = new Map();
 let idsByNode = new WeakMap();
 let nextBackendNodeId = 1;
 let accessibilityTreeCache: unknown[] | undefined;
-const CONSOLE_MESSAGE_TYPE = "remote-page-agent-console";
-const NAVIGATION_MESSAGE_TYPE = "remote-page-agent-navigation";
+const CONSOLE_MESSAGE_TYPE = "remote-devtools-console";
+const NAVIGATION_MESSAGE_TYPE = "remote-devtools-navigation";
 let consoleLevel = "warn";
 const EVENT_WINDOW_MS = 10_000;
 const MAX_CONSOLE_EVENTS = 50;
@@ -59,9 +59,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 function consumePageIdFragment() {
   const params = new URLSearchParams(location.hash.slice(1));
-  if (!params.has("remote-page-agent-page")) return "";
-  const pageId = params.get("remote-page-agent-page") || "";
-  const originalHash = params.get("remote-page-agent-original-hash");
+  if (!params.has("remote-devtools-page")) return "";
+  const pageId = params.get("remote-devtools-page") || "";
+  const originalHash = params.get("remote-devtools-original-hash");
   try {
     const cleanUrl = `${location.pathname}${location.search}${originalHash ? `#${originalHash}` : ""}`;
     history.replaceState(history.state, document.title, cleanUrl);

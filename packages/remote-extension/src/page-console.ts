@@ -1,5 +1,5 @@
-const MESSAGE_TYPE = "remote-page-agent-console";
-const PAGE_NAVIGATION_MESSAGE_TYPE = "remote-page-agent-navigation";
+const MESSAGE_TYPE = "remote-devtools-console";
+const PAGE_NAVIGATION_MESSAGE_TYPE = "remote-devtools-navigation";
 
 function announceNavigation() {
   window.postMessage(

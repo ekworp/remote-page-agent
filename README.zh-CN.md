@@ -1,10 +1,10 @@
-# 网页操盘手 | Remote Page Agent
+# Remote DevTools
 
-![Remote Page Agent](assets/remote-page-agent.svg)
+![Remote DevTools](assets/remote-devtools.svg)
 
 [English](README.md) · [中文](README.zh-CN.md)
 
-网页操盘手（Remote Page Agent）让 AI 通过油猴脚本或 Chromium MV3 扩展控制浏览器中的网页。客户端通过 WebSocket 与 Node.js 桥接服务通信，桥接服务提供有限的 CDP 接口，因此不需要在浏览器中开启 Chrome 远程调试。
+Remote DevTools 让 AI 通过油猴脚本或 Chromium MV3 扩展控制浏览器中的网页。客户端通过 WebSocket 与 Node.js 桥接服务通信，桥接服务提供有限的 CDP 接口，因此不需要在浏览器中开启 Chrome 远程调试。
 
 这是一个早期原型，请不要直接暴露在公网中。
 
@@ -61,14 +61,14 @@ docs/                   # 协议和迁移说明
 pnpm install
 pnpm build
 pnpm check
-pnpm --filter @remote-page-agent/cdp-bridge start
+pnpm --filter @remote-devtools/cdp-bridge start
 ```
 
 桥接服务默认监听 `9222` 端口。要让同一局域网中的手机连接，可以这样启动：
 
 ```bash
 HOST=0.0.0.0 PUBLIC_HOST=192.168.1.10 \
-  pnpm --filter @remote-page-agent/cdp-bridge start
+  pnpm --filter @remote-devtools/cdp-bridge start
 ```
 
 油猴脚本：将 `packages/remote-userscript/dist/remote-agent.user.js` 安装到 Tampermonkey 或其他油猴脚本管理器中，然后从脚本菜单打开 **连接设置**。默认地址是 `ws://localhost:9222/agent`，同一处也可以配置 Console 转发级别。如果桥接服务运行在其他设备上，请将 `localhost` 替换为该设备的局域网地址。

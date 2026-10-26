@@ -34,7 +34,7 @@ const appVersion = (require("../package.json") as { version: string }).version;
 // Keep the browser endpoint stable across bridge restarts so CDP clients can
 // reconnect using a cached /json/version WebSocket URL. A custom ID is useful
 // when several bridge instances are exposed through different addresses.
-const backendBrowserId = process.env.REMOTE_AGENT_BROWSER_ID?.trim() || "remote-page-agent";
+const backendBrowserId = process.env.REMOTE_AGENT_BROWSER_ID?.trim() || "remote-devtools";
 const remoteAgentToken = process.env.REMOTE_AGENT_TOKEN ?? dotEnv.REMOTE_AGENT_TOKEN ?? "";
 
 function positiveNumber(value: string | undefined, fallback: number): number {
@@ -1688,9 +1688,9 @@ async function handle(socket: WebSocket, message: CdpMessage): Promise<void> {
           socket,
           cdpResult(message, {
             protocolVersion: "1.3",
-            product: `Remote Page Agent/${appVersion}`,
-            revision: "remote-page-agent",
-            userAgent: "remote-page-agent",
+            product: `Remote DevTools/${appVersion}`,
+            revision: "remote-devtools",
+            userAgent: "remote-devtools",
             jsVersion: "ECMAScript",
           }),
         );
@@ -1944,7 +1944,7 @@ const server = createServer((request, response) => {
     response.setHeader("content-type", "application/json");
     response.end(
       json({
-        Browser: "Remote Page Agent",
+        Browser: "Remote DevTools",
         "Protocol-Version": "1.3",
         webSocketDebuggerUrl: publicUrl(`/devtools/browser/${backendBrowserId}`),
       }),

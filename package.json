@@ -1,11 +1,11 @@
 {
-  "name": "remote-page-agent",
+  "name": "remote-devtools",
   "private": false,
   "author": "ekworp",
   "packageManager": "pnpm@11.27.0",
   "scripts": {
     "build": "pnpm -r build",
-    "dev": "pnpm --filter @remote-page-agent/cdp-bridge dev",
+    "dev": "pnpm --filter @remote-devtools/cdp-bridge dev",
     "format": "biome format --write .",
     "check": "biome check . && pnpm -r typecheck"
   },

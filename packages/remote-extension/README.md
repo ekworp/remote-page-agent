@@ -1,6 +1,6 @@
-# 网页操盘手扩展 | Remote Page Agent Extension
+# Remote DevTools Extension
 
-This is the Chromium Manifest V3 version of 网页操盘手 (Remote Page Agent).
+This is the Chromium Manifest V3 version of Remote DevTools.
 
 The background service worker owns one bridge connection per tab. A content
 script handles page commands and sends page events back to the worker. This
@@ -12,12 +12,12 @@ Content Security Policy.
 Build the extension and create its ZIP package:
 
 ```bash
-pnpm --filter @remote-page-agent/remote-extension build
+pnpm --filter @remote-devtools/remote-extension build
 ```
 
 Compiled JavaScript and copied extension files are written to `dist/extension/`,
 which can be loaded directly as an unpacked extension. The ZIP package is
-written alongside it under `dist/` as `remote-page-agent-extension-v*.zip`.
+written alongside it under `dist/` as `remote-devtools-extension-v*.zip`.
 
 Then:
 

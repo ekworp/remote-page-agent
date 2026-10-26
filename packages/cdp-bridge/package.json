@@ -1,5 +1,5 @@
 {
-  "name": "@remote-page-agent/cdp-bridge",
+  "name": "@remote-devtools/cdp-bridge",
   "private": false,
   "version": "0.3.4",
   "author": "ekworp",

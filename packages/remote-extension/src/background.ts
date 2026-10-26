@@ -1,8 +1,8 @@
 export {};
 
 const DEFAULT_BRIDGE_URL = "ws://localhost:9222/agent";
-const RECONNECT_ALARM_PREFIX = "remote-page-agent-reconnect:";
-const RECONCILE_ALARM = "remote-page-agent-reconcile";
+const RECONNECT_ALARM_PREFIX = "remote-devtools-reconnect:";
+const RECONCILE_ALARM = "remote-devtools-reconcile";
 const TEMPORARY_GRANT_TTL_MS = 60_000;
 const TEMPORARY_GRANT_IDLE_TTL_MS = 5 * 60_000;
 const TEMPORARY_GRANT_MAX_LIFETIME_MS = 30 * 60_000;
@@ -47,10 +47,10 @@ async function updateActionStatus() {
   void chrome.action.setBadgeBackgroundColor({ color: badgeColor });
   void chrome.action.setTitle({
     title: activeConnection?.connected
-      ? `网页操盘手：当前页面已连接（共 ${count} 个页面）`
+      ? `Remote DevTools：当前页面已连接（共 ${count} 个页面）`
       : activeConnection
-        ? "网页操盘手：当前页面连接中"
-        : "网页操盘手：当前页面未连接",
+        ? "Remote DevTools：当前页面连接中"
+        : "Remote DevTools：当前页面未连接",
   });
 }
 
@@ -508,8 +508,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const target = new URL(payload.url);
       const originalHash = target.hash.slice(1);
       target.hash = new URLSearchParams({
-        "remote-page-agent-page": payload.pageId,
-        ...(originalHash ? { "remote-page-agent-original-hash": originalHash } : {}),
+        "remote-devtools-page": payload.pageId,
+        ...(originalHash ? { "remote-devtools-original-hash": originalHash } : {}),
       }).toString();
       addTemporaryGrant(payload.url, payload.pageId)
         .then(() => chrome.tabs.create({ url: target.href, active: true }))

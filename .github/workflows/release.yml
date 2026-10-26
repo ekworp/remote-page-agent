@@ -38,7 +38,7 @@ jobs:
       - name: Package release files
         run: |
           mkdir -p release
-          tar -czf release/remote-page-agent-${GITHUB_REF_NAME}.tar.gz \
+          tar -czf release/remote-devtools-${GITHUB_REF_NAME}.tar.gz \
             --exclude='node_modules' \
             --exclude='*.tsbuildinfo' \
             README.md LICENSE package.json pnpm-lock.yaml pnpm-workspace.yaml \

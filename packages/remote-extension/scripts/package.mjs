@@ -10,7 +10,7 @@ const extensionDir = join(distDir, "extension");
 const sourceAssetsDir = join(packageDir, "extension");
 const iconSourceDir = join(packageDir, "..", "..", "assets", "extension-icons");
 const bootstrapGearIcon = join(packageDir, "node_modules", "bootstrap-icons", "icons", "gear.svg");
-const output = join(distDir, `remote-page-agent-extension-v${packageJson.version}.zip`);
+const output = join(distDir, `remote-devtools-extension-v${packageJson.version}.zip`);
 const staging = mkdtempSync(join(packageDir, ".package-"));
 
 try {

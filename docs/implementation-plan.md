@@ -78,7 +78,7 @@ Playwright 官方文档推荐使用 Playwright 自带的 Chromium 加载未打�
 - AX 中的 `generic` 节点经常只是包装层，可能没有布局盒子。`rect`、`client_rects`、`stable_rects`、`is_intersecting`、`scroll_into_view` 和点击坐标都应解析到最近的可点击祖先或可布局容器，而不是只使用原始节点。
 - `getBoundingClientRect()` 的桥接结果应包含 `x/y/width/height/top/left/right/bottom`；`getClientRects` 必须返回数组。`stable_rects` 应保证两次矩形一致，避免轮播或懒加载动画导致 Locator 的 actionability 永远无法通过。
 - 移动端卡片经常位于内部滚动容器中。`scroll_into_view` 需要临时关闭滚动容器的 `scroll-behavior`，并在 `scrollIntoView` 后返回最新矩形。
-- 点击前要跳过 Remote Page Agent 自己的悬浮窗遮挡；鼠标释放后只执行一次元素激活行为，避免重复 `click`。激活行为必须通过 `setTimeout(0)` 延后到响应发送之后：导航或 `_blank` popup 可能立即销毁当前文档，若同步 `.click()` 会丢掉 WebSocket 响应，让 MCP 误报 actionability 超时。
+- 点击前要跳过 Remote DevTools 自己的悬浮窗遮挡；鼠标释放后只执行一次元素激活行为，避免重复 `click`。激活行为必须通过 `setTimeout(0)` 延后到响应发送之后：导航或 `_blank` popup 可能立即销毁当前文档，若同步 `.click()` 会丢掉 WebSocket 响应，让 MCP 误报 actionability 超时。
 - Bridge 在页面 socket 关闭时，应立即结束该页面的 pending 请求；点击/按键类请求按“已送达并可能触发导航”处理为成功，其他请求返回 Page disconnected，避免等待 15s agent timeout。
 - Puppeteer 的 `Locator.fill()` 会先调用一个类型探测函数（返回 `typeable-input` / `checkable-input` / `select` / `contenteditable`），再对短文本调用“计算剩余文本 + type()”的函数，对长文本调用直接赋值函数。Bridge 必须识别这些函数形状并转换为固定 `get_input_kind`、`fill`、`get_checked`、`select_option` 操作，不能落到 `eval_safe`。
 - 固定输入操作只修改 input/textarea/select/checkbox/radio/contenteditable，按 `beforeinput -> 修改 value/checked -> input -> change` 顺序派发事件；`Input.insertText` 应按当前选区插入文本而不是覆盖整个 value。

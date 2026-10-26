@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         网页操盘手 | Remote Page Agent
-// @namespace    remote-page-agent
+// @name         Remote DevTools
+// @namespace    remote-devtools
 // @author       ekworp
 // @version      __PACKAGE_VERSION__
 // @description  Let AI remotely control browser pages through a userscript and WebSocket.
-// @icon         https://cdn.jsdelivr.net/gh/ekworp/remote-page-agent@main/assets/remote-page-agent.png
+// @icon         https://cdn.jsdelivr.net/gh/ekworp/remote-devtools@main/assets/remote-devtools.png
 // @match        *://*/*
 // @run-at       document-start
 // @grant        GM_registerMenuCommand
@@ -50,14 +50,14 @@ type DomSummary = {
   inputs: Array<{ type: string; name: string; placeholder: string; value: string }>;
 };
 
-const bridgeStorageKey = "remote-page-agent-bridge-url";
-const bridgeTokenStorageKey = "remote-page-agent-bridge-token";
-const languageStorageKey = "remote-page-agent-language";
-const whitelistEnabledStorageKey = "remote-page-agent-whitelist-enabled";
-const whitelistOriginsStorageKey = "remote-page-agent-whitelist-origins";
-const temporaryGrantStorageKey = "remote-page-agent-temporary-grants";
-const commandHistoryLimitStorageKey = "remote-page-agent-command-history-limit";
-const consoleLevelStorageKey = "remote-page-agent-console-level";
+const bridgeStorageKey = "remote-devtools-bridge-url";
+const bridgeTokenStorageKey = "remote-devtools-bridge-token";
+const languageStorageKey = "remote-devtools-language";
+const whitelistEnabledStorageKey = "remote-devtools-whitelist-enabled";
+const whitelistOriginsStorageKey = "remote-devtools-whitelist-origins";
+const temporaryGrantStorageKey = "remote-devtools-temporary-grants";
+const commandHistoryLimitStorageKey = "remote-devtools-command-history-limit";
+const consoleLevelStorageKey = "remote-devtools-console-level";
 const defaultBridgeUrl = "ws://localhost:9222/agent";
 const temporaryGrantTtlMs = 60_000;
 const temporaryGrantIdleTtlMs = 5 * 60_000;
@@ -81,7 +81,7 @@ const translations: Record<string, Record<Language, string>> = {
   consoleWarn: { zh: "警告和错误", en: "Warnings and errors" },
   consoleError: { zh: "仅错误", en: "Errors only" },
   consoleOff: { zh: "关闭", en: "Disabled" },
-  settingsTitle: { zh: "Remote Page Agent 连接设置", en: "Remote Page Agent connection settings" },
+  settingsTitle: { zh: "Remote DevTools 连接设置", en: "Remote DevTools connection settings" },
   serverAddress: { zh: "服务器地址", en: "Server address" },
   connectionPassword: { zh: "连接密码", en: "Connection password" },
   language: { zh: "语言", en: "Language" },
@@ -112,22 +112,22 @@ const translations: Record<string, Record<Language, string>> = {
     zh: "当前页面不在自动连接白名单中",
     en: "This page is not in the auto-connect whitelist",
   },
-  connecting: { zh: "正在连接 Remote Page Agent", en: "Connecting to Remote Page Agent" },
-  connected: { zh: "Remote Page Agent 已连接", en: "Remote Page Agent connected" },
+  connecting: { zh: "正在连接 Remote DevTools", en: "Connecting to Remote DevTools" },
+  connected: { zh: "Remote DevTools 已连接", en: "Remote DevTools connected" },
   authenticationFailed: {
-    zh: "Remote Page Agent 认证失败",
-    en: "Remote Page Agent authentication failed",
+    zh: "Remote DevTools 认证失败",
+    en: "Remote DevTools authentication failed",
   },
-  disconnected: { zh: "Remote Page Agent 已断开", en: "Remote Page Agent disconnected" },
+  disconnected: { zh: "Remote DevTools 已断开", en: "Remote DevTools disconnected" },
   reconnectStopped: {
-    zh: "Remote Page Agent 已断开，自动重连已停止",
-    en: "Remote Page Agent disconnected; automatic reconnect stopped",
+    zh: "Remote DevTools 已断开，自动重连已停止",
+    en: "Remote DevTools disconnected; automatic reconnect stopped",
   },
   reconnectAttempt: {
     zh: "将在 {{seconds}} 秒后重连（第 {{attempt}} 次）",
     en: "Reconnect attempt {{attempt}} in {{seconds}}s",
   },
-  connectionError: { zh: "Remote Page Agent 连接错误", en: "Remote Page Agent connection error" },
+  connectionError: { zh: "Remote DevTools 连接错误", en: "Remote DevTools connection error" },
   offline: {
     zh: "网络不可用，等待网络恢复后重连",
     en: "Network unavailable; waiting to reconnect",
@@ -153,13 +153,13 @@ function translate(key: string, values: Record<string, string | number> = {}): s
   }
   return message;
 }
-const browserIdStorageKey = "remote-page-agent-browser-id";
-const pageIdStorageKey = "remote-page-agent-page-id";
+const browserIdStorageKey = "remote-devtools-browser-id";
+const pageIdStorageKey = "remote-devtools-page-id";
 const browserId = GM_getValue<string>(browserIdStorageKey, "") || crypto.randomUUID();
 GM_setValue(browserIdStorageKey, browserId);
 let pageId = "";
-const namedPageId = window.name.startsWith("remote-page-agent:")
-  ? window.name.slice("remote-page-agent:".length)
+const namedPageId = window.name.startsWith("remote-devtools:")
+  ? window.name.slice("remote-devtools:".length)
   : "";
 const fragmentPageId = consumePageIdFragment();
 try {
@@ -217,7 +217,7 @@ let operationText: HTMLDivElement | undefined;
 let noticeMenu: HTMLDivElement | undefined;
 let historyList: HTMLUListElement | undefined;
 let bridgeConfigDialog: HTMLDivElement | undefined;
-const noticeOpacityKey = "remote-page-agent-notice-opacity";
+const noticeOpacityKey = "remote-devtools-notice-opacity";
 
 type NoticeKind = "info" | "success" | "error";
 type CommandStatus = "pending" | "success" | "error";
@@ -354,7 +354,7 @@ function showNotice(message: string, kind: NoticeKind = "info"): void {
       "user-select: text",
     ].join(";");
     const heading = document.createElement("strong");
-    heading.textContent = "Remote Page Agent";
+    heading.textContent = "Remote DevTools";
     menu.append(heading);
     operationText = document.createElement("div");
     operationText.style.cssText = "margin-top: 8px; color: #d1d5db; word-break: break-word;";
@@ -426,7 +426,7 @@ function showNotice(message: string, kind: NoticeKind = "info"): void {
     });
     menu.append(whitelistButton);
     element.append(menu);
-    element.setAttribute("data-remote-page-agent", "notice");
+    element.setAttribute("data-remote-devtools", "notice");
     element.style.cssText = [
       "position: fixed",
       "right: 16px",
@@ -635,9 +635,9 @@ function touchTemporaryGrant(): void {
 
 function consumePageIdFragment(): string {
   const params = new URLSearchParams(location.hash.slice(1));
-  if (!params.has("remote-page-agent-page")) return "";
-  const value = params.get("remote-page-agent-page") ?? "";
-  const originalHash = params.get("remote-page-agent-original-hash");
+  if (!params.has("remote-devtools-page")) return "";
+  const value = params.get("remote-devtools-page") ?? "";
+  const originalHash = params.get("remote-devtools-original-hash");
   try {
     const cleanUrl = `${location.pathname}${location.search}${originalHash ? `#${originalHash}` : ""}`;
     history.replaceState(history.state, document.title, cleanUrl);
@@ -651,8 +651,8 @@ function urlWithPageId(url: string, targetPageId: string): string {
   const target = new URL(url, location.href);
   const originalHash = target.hash.slice(1);
   const marker = new URLSearchParams({
-    "remote-page-agent-page": targetPageId,
-    ...(originalHash ? { "remote-page-agent-original-hash": originalHash } : {}),
+    "remote-devtools-page": targetPageId,
+    ...(originalHash ? { "remote-devtools-original-hash": originalHash } : {}),
   });
   target.hash = marker.toString();
   return target.href;
@@ -667,7 +667,7 @@ function configureBridge(): void {
 
   const overlay = document.createElement("div");
   bridgeConfigDialog = overlay;
-  overlay.setAttribute("data-remote-page-agent", "bridge-config");
+  overlay.setAttribute("data-remote-devtools", "bridge-config");
   overlay.setAttribute("role", "presentation");
   overlay.style.cssText = [
     "position: fixed",
@@ -684,7 +684,7 @@ function configureBridge(): void {
   const panel = document.createElement("form");
   panel.setAttribute("role", "dialog");
   panel.setAttribute("aria-modal", "true");
-  panel.setAttribute("aria-labelledby", "remote-page-agent-config-title");
+  panel.setAttribute("aria-labelledby", "remote-devtools-config-title");
   panel.style.cssText = [
     "width: min(420px, 100%)",
     "box-sizing: border-box",
@@ -696,7 +696,7 @@ function configureBridge(): void {
   ].join(";");
 
   const title = document.createElement("h2");
-  title.id = "remote-page-agent-config-title";
+  title.id = "remote-devtools-config-title";
   title.textContent = translate("settingsTitle");
   title.style.cssText = "margin: 0 0 16px; font-size: 18px;";
   panel.append(title);
@@ -1187,7 +1187,7 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
     ...(element.shadowRoot ? Array.from(element.shadowRoot.children) : []),
   ];
   const visit = (element: Element, level: number): string[] => {
-    if (element.closest("[data-remote-page-agent]")) return [];
+    if (element.closest("[data-remote-devtools]")) return [];
     if (isHiddenFromAccessibilityTree(element) || nodes.length >= maxNodes) return [];
     const backendNodeId = backendNodeIdFor(element);
     const nodeId = String(backendNodeId);
@@ -1984,7 +1984,7 @@ function elementAtPoint(x: number, y: number): Element | null {
   // The agent status badge is fixed on top of the page. Never let it swallow a
   // remote click.
   const stack = document.elementsFromPoint(x, y);
-  const hit = stack.find((element) => !element.closest("[data-remote-page-agent]"));
+  const hit = stack.find((element) => !element.closest("[data-remote-devtools]"));
   return hit ?? document.elementFromPoint(x, y);
 }
 
@@ -2258,7 +2258,7 @@ async function execute(request: AgentRequest): Promise<void> {
       if (typeof GM_openInTab === "function") {
         GM_openInTab(targetUrl, { active: true, insert: true, setParent: true });
       } else {
-        const popup = window.open(targetUrl, `remote-page-agent:${payload.pageId}`);
+        const popup = window.open(targetUrl, `remote-devtools:${payload.pageId}`);
         if (!popup) throw new Error("The browser blocked opening a new page");
       }
       response(request.id, { opened: true, pageId: payload.pageId });
@@ -2458,7 +2458,7 @@ function connect(): void {
       recordCommand(message.id, message.type);
       void execute(message).catch((error) => failure(message.id, error));
     } catch (error) {
-      console.error("Remote Page Agent message error", error);
+      console.error("Remote DevTools message error", error);
     }
   });
   currentSocket.addEventListener("close", () => {
