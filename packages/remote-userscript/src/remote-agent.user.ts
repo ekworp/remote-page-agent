@@ -956,7 +956,13 @@ function isFunctionExpression(code: string): boolean {
 
 function isBodyTextExpression(code: string): boolean {
   const normalized = code.replace(/\s+/g, "");
-  return /document\.body\?document\.body\.innerText:['"]NOBODY['"]/.test(normalized);
+  // Puppeteer's text locator emits several equivalent forms of this safe,
+  // read-only query depending on the installed version. Keep the allowlist
+  // narrow, but accept optional chaining and documentElement.textContent too.
+  return (
+    /document\.body\??\.innerText/.test(normalized) ||
+    /document\.documentElement\??\.textContent/.test(normalized)
+  );
 }
 
 function selector(payload: Record<string, unknown>): Element {
@@ -969,6 +975,23 @@ function selector(payload: Record<string, unknown>): Element {
     throw new Error(`Element not found: ${value}`);
   }
   return element;
+}
+
+function findTextElement(text: string, mode: "text" | "aria"): Element | undefined {
+  if (!text) return undefined;
+  const elements = Array.from(document.querySelectorAll<HTMLElement>("body *"));
+  if (mode === "aria") {
+    return elements.find(
+      (element) =>
+        element.getAttribute("aria-label") === text ||
+        element.getAttribute("title") === text ||
+        element.getAttribute("placeholder") === text,
+    );
+  }
+  return elements.find((element) => {
+    if (!(element.textContent ?? "").includes(text)) return false;
+    return !Array.from(element.children).some((child) => (child.textContent ?? "").includes(text));
+  });
 }
 
 function accessibilityRole(element: Element): string {
@@ -2353,6 +2376,13 @@ async function execute(request: AgentRequest): Promise<void> {
       response(request.id, element?.outerHTML ?? "");
       return;
     }
+    case "find_text": {
+      if (typeof payload.text !== "string") throw new Error("text is required");
+      const mode = payload.mode === "aria" ? "aria" : "text";
+      const element = findTextElement(payload.text, mode);
+      response(request.id, element ? { backendNodeId: backendNodeIdFor(element) } : null);
+      return;
+    }
     case "eval_safe": {
       if (typeof payload.code !== "string") {
         throw new Error("code is required");
@@ -2366,7 +2396,9 @@ async function execute(request: AgentRequest): Promise<void> {
         return;
       }
       if (isBodyTextExpression(code)) {
-        const bodyText = document.body?.innerText ?? "NO BODY";
+        const bodyText = code.includes("document.documentElement")
+          ? (document.documentElement?.textContent ?? "NO BODY")
+          : (document.body?.innerText ?? "NO BODY");
         response(
           request.id,
           code.includes("JSON.stringify") ? JSON.stringify(bodyText) : bodyText,

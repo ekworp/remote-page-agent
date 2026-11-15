@@ -128,7 +128,7 @@ const sessionsByPage = new Map<string, Set<string>>();
 const functionHandles = new Map<string, string>();
 const domHandles = new Map<string, number>();
 const pollerHandles = new Set<string>();
-const pollerResults = new Map<string, boolean>();
+const pollerResults = new Map<string, { enabled: boolean; backendNodeId?: number }>();
 const stableDomHandles = new Set<string>();
 const actionabilityCache = new Map<string, { value: boolean; expiresAt: number }>();
 const actionabilityCacheTtlMs = 2_500;
@@ -884,28 +884,98 @@ async function tryHandleDomCall(
     .map((argument) => argument.value);
   const domHandle = domHandleForCall(message, argumentsList);
 
+  // These Puppeteer helper calls do not touch the page DOM. Handle them before
+  // any locator/handle dispatch so the binding setup cannot be mistaken for a
+  // restricted page evaluation.
+  if (/function addPageBinding/.test(functionDeclaration)) {
+    return { type: "undefined" };
+  }
+  if (/poller\.(?:start|stop)\s*\(/.test(functionDeclaration)) {
+    return { type: "undefined" };
+  }
+
+  // Puppeteer's Locator uses an injected query function for `text/...` and
+  // `aria/...` selectors. The bridge deliberately does not evaluate arbitrary
+  // page JavaScript, so route these two read-only queries to the fixed DOM
+  // command instead of letting them fall through to eval_safe.
+  const injectedQuery = argumentValues.find(
+    (value): value is string =>
+      typeof value === "string" && /(?:text|aria)QuerySelector(?:All)?/.test(value),
+  );
+  if (injectedQuery && !/RAFPoller|IntervalPoller|MutationPoller/.test(functionDeclaration)) {
+    const query = argumentValues
+      .filter((value): value is string => typeof value === "string" && value.length < 500)
+      .at(-1);
+    if (query) {
+      const mode = /ariaQuerySelector/i.test(injectedQuery) ? "aria" : "text";
+      const result = await requestAgent(page, "find_text", { text: query, mode });
+      if (!result.ok) throw new Error(result.error?.message ?? "Text query failed");
+      const backendNodeId = numberParam(
+        (result.result as { backendNodeId?: unknown } | null)?.backendNodeId,
+      );
+      if (backendNodeId === undefined) {
+        return { type: "object", subtype: "null", value: null };
+      }
+      const objectId = `dom:${backendNodeId}:${randomUUID()}`;
+      domHandles.set(objectId, backendNodeId);
+      return { type: "object", subtype: "node", objectId, description: "Element" };
+    }
+  }
+
+  // Puppeteer may associate the polling lifecycle callbacks with the DOM root
+  // handle rather than the synthetic poller handle. These callbacks are
+  // lifecycle-only and must not fall through to the restricted evaluator.
+  if (/poller\.result\s*\(/.test(functionDeclaration) && domHandle) {
+    return { type: "boolean", value: true };
+  }
+  if (domHandle && /return\s+(?:object2|element|node2|node)\s*;/.test(functionDeclaration)) {
+    // jsonValue() is used by wait_for to serialize the resolved Locator. A
+    // remote DOM handle cannot be extracted as a JSON value, so return the
+    // safe empty serialization expected for an Element instead.
+    return { type: "object", value: {} };
+  }
+
   if (/RAFPoller|IntervalPoller|MutationPoller/.test(functionDeclaration)) {
     const objectId = `poller:${randomUUID()}`;
     pollerHandles.add(objectId);
     const predicate = argumentValues.find((value) => typeof value === "string");
     let enabled = true;
+    let resultBackendNodeId: number | undefined;
+    if (injectedQuery) {
+      const query = argumentValues
+        .filter((value): value is string => typeof value === "string" && value.length < 500)
+        .at(-1);
+      if (query) {
+        const mode = /ariaQuerySelector/i.test(injectedQuery) ? "aria" : "text";
+        const result = await requestAgent(page, "find_text", { text: query, mode });
+        const found = result.ok === true && result.result !== null && result.result !== undefined;
+        enabled = found;
+        if (found) {
+          resultBackendNodeId = numberParam(
+            (result.result as { backendNodeId?: unknown }).backendNodeId,
+          );
+        }
+      }
+    }
     if (domHandle && typeof predicate === "string" && /disabled/i.test(predicate)) {
       const state = await getEnabledOperation(page, domHandle.backendNodeId);
       enabled = state.value === true;
     }
-    pollerResults.set(objectId, enabled);
+    pollerResults.set(objectId, { enabled, backendNodeId: resultBackendNodeId });
     return { type: "object", className: "Object", objectId, description: "Poller" };
   }
 
   const pollerObjectId = pollerObjectIdForCall(message, argumentsList);
   if (pollerObjectId) {
-    const enabled = pollerResults.get(pollerObjectId) ?? true;
-    if (/\.result\s*\(/.test(functionDeclaration)) return { type: "boolean", value: enabled };
-    return { type: "undefined" };
-  }
-
-  if (/function addPageBinding/.test(functionDeclaration)) {
-    // Puppeteer's binding shim is not needed by the fixed DOM commands.
+    const pollerResult = pollerResults.get(pollerObjectId) ?? { enabled: true };
+    if (/\.result\s*\(/.test(functionDeclaration)) {
+      if (pollerResult.backendNodeId !== undefined) {
+        const objectId = `dom:${pollerResult.backendNodeId}:${randomUUID()}`;
+        domHandles.set(objectId, pollerResult.backendNodeId);
+        return { type: "object", subtype: "node", objectId, description: "Element" };
+      }
+      return { type: "boolean", value: pollerResult.enabled };
+    }
     return { type: "undefined" };
   }
 

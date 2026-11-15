@@ -110,6 +110,23 @@ function elementByBackendNodeId(value) {
   return element;
 }
 
+function findTextElement(text, mode) {
+  if (!text) return undefined;
+  const elements = Array.from(document.querySelectorAll("body *"));
+  if (mode === "aria") {
+    return elements.find(
+      (element) =>
+        element.getAttribute("aria-label") === text ||
+        element.getAttribute("title") === text ||
+        element.getAttribute("placeholder") === text,
+    );
+  }
+  return elements.find((element) => {
+    if (!(element.textContent || "").includes(text)) return false;
+    return !Array.from(element.children).some((child) => (child.textContent || "").includes(text));
+  });
+}
+
 function roleFor(element) {
   const explicitRole = element.getAttribute("role");
   if (explicitRole) return explicitRole.split(" ")[0];
@@ -680,6 +697,10 @@ async function commandResult(message) {
     }
     case "dom_outer_html":
       return elementByBackendNodeId(payload.backendNodeId).outerHTML;
+    case "find_text": {
+      const element = findTextElement(String(payload.text || ""), payload.mode);
+      return element ? { backendNodeId: backendNodeIdFor(element) } : null;
+    }
     case "eval_safe":
       return safeEvaluation(payload.code);
     case "dom_operation": {
