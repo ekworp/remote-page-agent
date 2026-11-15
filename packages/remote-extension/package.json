@@ -1,7 +1,7 @@
 {
   "name": "@remote-devtools/remote-extension",
   "private": false,
-  "version": "0.3.5",
+  "version": "0.3.6",
   "author": "ekworp",
   "type": "module",
   "scripts": {
