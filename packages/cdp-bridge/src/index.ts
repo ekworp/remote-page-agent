@@ -496,6 +496,10 @@ function frameTree(page: PageConnection): Record<string, unknown> {
   };
 }
 
+function resourceTree(page: PageConnection): Record<string, unknown> {
+  return { ...frameTree(page), resources: [] };
+}
+
 function executionContextId(sessionId: string | undefined, worldName: string): number {
   const sessionKey = sessionId ?? "root";
   let worlds = executionContextIds.get(sessionKey);
@@ -1722,7 +1726,7 @@ async function handlePageCommand(socket: WebSocket, message: CdpMessage): Promis
     }
     case "Page.getResourceTree": {
       const page = pageForMessage(message);
-      send(socket, cdpResult(message, { frameTree: frameTree(page), resources: [] }));
+      send(socket, cdpResult(message, { frameTree: resourceTree(page) }));
       return true;
     }
     case "Accessibility.getFullAXTree": {

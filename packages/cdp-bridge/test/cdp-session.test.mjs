@@ -133,6 +133,10 @@ test("CDP sessions receive execution contexts and evaluate functions", async (t)
   assert.equal(contextEvent.params.context.auxData.frameId, "page-1");
   assert.equal(contextEvent.params.context.auxData.isDefault, true);
 
+  const resourceTree = await send("Page.getResourceTree", {}, sessionId);
+  assert.deepEqual(resourceTree.frameTree.resources, []);
+  assert.equal(resourceTree.resources, undefined);
+
   const eventCount = events.length;
   await send(
     "Target.setAutoAttach",
@@ -962,6 +966,18 @@ test("page targets stay unique across connect, reconnect, navigation and close",
     throw new Error(`Timed out waiting for ${label}`);
   };
 
+  const initialHttpPages = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) =>
+    response.json(),
+  );
+  assert.deepEqual(initialHttpPages, [], "HTTP page enumeration is empty before agent hello");
+
+  const initialTargets = await send("Target.getTargets");
+  assert.deepEqual(
+    initialTargets.targetInfos,
+    [],
+    "target enumeration is empty until the page agent sends hello",
+  );
+
   await send("Target.setDiscoverTargets", { discover: true });
   await send("Target.setAutoAttach", {
     autoAttach: true,
@@ -995,6 +1011,14 @@ test("page targets stay unique across connect, reconnect, navigation and close",
           event.params?.targetInfo?.targetId === "page-a",
       ),
     "targetCreated for page-a",
+  );
+  const httpPagesAfterHello = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) =>
+    response.json(),
+  );
+  assert.deepEqual(
+    httpPagesAfterHello.map((page) => page.id),
+    ["page-a"],
+    "HTTP page enumeration includes the page after agent hello",
   );
   const attachedA = await waitUntil(
     () =>
