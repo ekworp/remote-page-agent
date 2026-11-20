@@ -66,6 +66,7 @@ const whitelistOriginsStorageKey = "remote-devtools-whitelist-origins";
 const temporaryGrantStorageKey = "remote-devtools-temporary-grants";
 const commandHistoryLimitStorageKey = "remote-devtools-command-history-limit";
 const consoleLevelStorageKey = "remote-devtools-console-level";
+const dynamicJavaScriptStorageKey = "remote-devtools-dynamic-javascript";
 const defaultBridgeUrl = "ws://localhost:9222/agent";
 const temporaryGrantTtlMs = 60_000;
 const temporaryGrantIdleTtlMs = 5 * 60_000;
@@ -89,6 +90,14 @@ const translations: Record<string, Record<Language, string>> = {
   consoleWarn: { zh: "警告和错误", en: "Warnings and errors" },
   consoleError: { zh: "仅错误", en: "Errors only" },
   consoleOff: { zh: "关闭", en: "Disabled" },
+  dynamicJavaScript: {
+    zh: "允许动态执行 JavaScript（高风险）",
+    en: "Allow dynamic JavaScript execution (high risk)",
+  },
+  dynamicJavaScriptWarning: {
+    zh: "开启后，远程命令可以执行页面脚本；默认关闭，并会阻止 Cookie、Storage 和凭据访问。",
+    en: "When enabled, remote commands can run page scripts; disabled by default and blocks cookie, storage, and credential access.",
+  },
   settingsTitle: { zh: "Remote DevTools 连接设置", en: "Remote DevTools connection settings" },
   serverAddress: { zh: "服务器地址", en: "Server address" },
   connectionPassword: { zh: "连接密码", en: "Connection password" },
@@ -152,6 +161,10 @@ function getLanguage(): Language {
   const preference = getLanguagePreference();
   if (preference === "zh" || preference === "en") return preference;
   return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+function dynamicJavaScriptEnabled(): boolean {
+  return GM_getValue<boolean>(dynamicJavaScriptStorageKey, false) === true;
 }
 
 function translate(key: string, values: Record<string, string | number> = {}): string {
@@ -776,6 +789,22 @@ function configureBridge(): void {
   consoleLabel.append(consoleSelect);
   panel.append(consoleLabel);
 
+  const dynamicJavaScriptLabel = document.createElement("label");
+  dynamicJavaScriptLabel.style.cssText =
+    "display: flex; gap: 8px; align-items: flex-start; margin-top: 16px; font-weight: 600;";
+  const dynamicJavaScriptInput = document.createElement("input");
+  dynamicJavaScriptInput.type = "checkbox";
+  dynamicJavaScriptInput.checked = dynamicJavaScriptEnabled();
+  const dynamicJavaScriptText = document.createElement("span");
+  dynamicJavaScriptText.textContent = translate("dynamicJavaScript");
+  dynamicJavaScriptLabel.append(dynamicJavaScriptInput, dynamicJavaScriptText);
+  panel.append(dynamicJavaScriptLabel);
+  const dynamicJavaScriptWarning = document.createElement("p");
+  dynamicJavaScriptWarning.textContent = translate("dynamicJavaScriptWarning");
+  dynamicJavaScriptWarning.style.cssText =
+    "margin: 6px 0 0 24px; color: #b45309; font-size: 12px; line-height: 1.4;";
+  panel.append(dynamicJavaScriptWarning);
+
   const languageLabel = document.createElement("label");
   languageLabel.style.cssText = "display: block; margin-top: 12px; font-weight: 600;";
   languageLabel.textContent = translate("language");
@@ -896,6 +925,7 @@ function configureBridge(): void {
       ? (consoleSelect.value as ConsoleLevel)
       : "warn";
     GM_setValue(consoleLevelStorageKey, currentConsoleLevel);
+    GM_setValue(dynamicJavaScriptStorageKey, dynamicJavaScriptInput.checked);
     trimCommandHistory();
     GM_setValue(
       languageStorageKey,
@@ -983,6 +1013,56 @@ function isBodyTextExpression(code: string): boolean {
     /document\.body\??\.innerText/.test(normalized) ||
     /document\.documentElement\??\.textContent/.test(normalized)
   );
+}
+
+const dynamicJavaScriptMaxLength = 100_000;
+const dynamicJavaScriptMaxResultLength = 1_000_000;
+const dynamicJavaScriptTimeoutMs = 10_000;
+const dynamicJavaScriptSensitivePattern =
+  /(?:document\s*\.\s*cookie|localStorage|sessionStorage|indexedDB|navigator\s*\.\s*credentials|\bcaches\b|\bpassword\b)/i;
+
+type DynamicJavaScriptResult = { result: unknown; meta?: Record<string, unknown> };
+
+async function evaluateDynamicJavaScript(code: string): Promise<DynamicJavaScriptResult> {
+  if (!dynamicJavaScriptEnabled())
+    throw new Error("Dynamic JavaScript is disabled in page settings");
+  if (code.length > dynamicJavaScriptMaxLength) {
+    throw new Error(`Dynamic JavaScript is limited to ${dynamicJavaScriptMaxLength} characters`);
+  }
+  if (dynamicJavaScriptSensitivePattern.test(code)) {
+    throw new Error(
+      "Dynamic JavaScript cannot access cookies, storage, credentials, or password fields",
+    );
+  }
+  let evaluate: () => unknown;
+  try {
+    evaluate = new Function(`"use strict"; return (async () => (${code}))();`) as () => unknown;
+  } catch {
+    evaluate = new Function(`"use strict"; return (async () => {\n${code}\n})();`) as () => unknown;
+  }
+  let timer: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(
+      () => reject(new Error(`Dynamic JavaScript timed out after ${dynamicJavaScriptTimeoutMs}ms`)),
+      dynamicJavaScriptTimeoutMs,
+    );
+  });
+  try {
+    const value = await Promise.race([Promise.resolve().then(evaluate), timeout]);
+    if (value === undefined) return { result: undefined, meta: { resultType: "undefined" } };
+    if (typeof value === "function")
+      return { result: undefined, meta: { resultType: "function", functionSource: String(value) } };
+    if (typeof value === "bigint") return { result: String(value), meta: { resultType: "string" } };
+    const serialized = JSON.stringify(value);
+    if (serialized && serialized.length > dynamicJavaScriptMaxResultLength) {
+      throw new Error(
+        `Dynamic JavaScript result is limited to ${dynamicJavaScriptMaxResultLength} characters`,
+      );
+    }
+    return { result: serialized === undefined ? undefined : JSON.parse(serialized) };
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+  }
 }
 
 function selector(payload: Record<string, unknown>): Element {
@@ -2480,8 +2560,13 @@ async function execute(request: AgentRequest, commandSocket: WebSocket): Promise
         });
         return;
       }
+      if (dynamicJavaScriptEnabled()) {
+        const evaluated = await evaluateDynamicJavaScript(code);
+        response(commandSocket, request.id, evaluated.result, evaluated.meta);
+        return;
+      }
       throw new Error(
-        "This page blocks dynamic JavaScript evaluation; use a fixed command instead.",
+        "This page blocks dynamic JavaScript evaluation; enable it in page settings first.",
       );
     }
     default:

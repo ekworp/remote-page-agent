@@ -9,6 +9,7 @@ const accessibilityTreeMaxPageSize = 2_000;
 const CONSOLE_MESSAGE_TYPE = "remote-devtools-console";
 const NAVIGATION_MESSAGE_TYPE = "remote-devtools-navigation";
 let consoleLevel = "warn";
+let allowDynamicJavaScript = false;
 const EVENT_WINDOW_MS = 10_000;
 const MAX_CONSOLE_EVENTS = 50;
 const MAX_PAGE_EVENTS = 20;
@@ -45,17 +46,24 @@ function consoleLevelAllows(method) {
 }
 
 void chrome.storage.local
-  .get({ consoleLevel: "warn" })
+  .get({ consoleLevel: "warn", allowDynamicJavaScript: false })
   .then((values) => {
     if (["all", "warn", "error", "off"].includes(values.consoleLevel)) {
       consoleLevel = values.consoleLevel;
     }
+    allowDynamicJavaScript = values.allowDynamicJavaScript === true;
   })
   .catch(() => {});
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes.consoleLevel) return;
-  if (["all", "warn", "error", "off"].includes(changes.consoleLevel.newValue)) {
+  if (area !== "local") return;
+  if (
+    changes.consoleLevel &&
+    ["all", "warn", "error", "off"].includes(changes.consoleLevel.newValue)
+  ) {
     consoleLevel = changes.consoleLevel.newValue;
+  }
+  if (changes.allowDynamicJavaScript) {
+    allowDynamicJavaScript = changes.allowDynamicJavaScript.newValue === true;
   }
 });
 
@@ -564,7 +572,54 @@ function dispatchInput(payload) {
   return { type: payload.type || "click", ...describeElement(element) };
 }
 
-function safeEvaluation(code) {
+const dynamicJavaScriptMaxLength = 100_000;
+const dynamicJavaScriptMaxResultLength = 1_000_000;
+const dynamicJavaScriptTimeoutMs = 10_000;
+const dynamicJavaScriptSensitivePattern =
+  /(?:document\s*\.\s*cookie|localStorage|sessionStorage|indexedDB|navigator\s*\.\s*credentials|\bcaches\b|\bpassword\b)/i;
+
+async function evaluateDynamicJavaScript(code) {
+  if (!allowDynamicJavaScript) throw new Error("Dynamic JavaScript is disabled in page settings");
+  if (code.length > dynamicJavaScriptMaxLength) {
+    throw new Error(`Dynamic JavaScript is limited to ${dynamicJavaScriptMaxLength} characters`);
+  }
+  if (dynamicJavaScriptSensitivePattern.test(code)) {
+    throw new Error(
+      "Dynamic JavaScript cannot access cookies, storage, credentials, or password fields",
+    );
+  }
+  let evaluate: () => unknown;
+  try {
+    evaluate = new Function(`"use strict"; return (async () => (${code}))();`);
+  } catch {
+    evaluate = new Function(`"use strict"; return (async () => {\n${code}\n})();`);
+  }
+  let timer: number | undefined;
+  const timeout = new Promise((_, reject) => {
+    timer = window.setTimeout(
+      () => reject(new Error(`Dynamic JavaScript timed out after ${dynamicJavaScriptTimeoutMs}ms`)),
+      dynamicJavaScriptTimeoutMs,
+    );
+  });
+  try {
+    const value = await Promise.race([Promise.resolve().then(evaluate), timeout]);
+    if (value === undefined) return { result: undefined, resultType: "undefined" };
+    if (typeof value === "function")
+      return { result: undefined, resultType: "function", functionSource: String(value) };
+    if (typeof value === "bigint") return { result: String(value), resultType: "string" };
+    const serialized = JSON.stringify(value);
+    if (serialized && serialized.length > dynamicJavaScriptMaxResultLength) {
+      throw new Error(
+        `Dynamic JavaScript result is limited to ${dynamicJavaScriptMaxResultLength} characters`,
+      );
+    }
+    return { result: serialized === undefined ? undefined : JSON.parse(serialized) };
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+  }
+}
+
+async function safeEvaluation(code) {
   const normalized = String(code).replace(/\s+/g, "");
   if (
     normalized.includes("document.body?.innerText") ||
@@ -575,7 +630,10 @@ function safeEvaluation(code) {
   if (normalized.includes("document.title"))
     return { result: document.title, resultType: "string" };
   if (normalized.includes("location.href")) return { result: location.href, resultType: "string" };
-  throw new Error("This page blocks dynamic JavaScript evaluation; use a fixed command instead.");
+  if (allowDynamicJavaScript) return evaluateDynamicJavaScript(String(code));
+  throw new Error(
+    "This page blocks dynamic JavaScript evaluation; enable it in page settings first.",
+  );
 }
 
 function waitForStableDom(quietMs = 100, maxWaitMs = 3000) {
@@ -866,7 +924,13 @@ chrome.runtime.onMessage.addListener((message) => {
   if (typeof request.id !== "string") return;
   try {
     void Promise.resolve(commandResult(request)).then(
-      (result) => send({ id: request.id, type: request.type, ok: true, result }),
+      (result) => {
+        if (request.type === "eval_safe" && result && typeof result === "object") {
+          send({ id: request.id, type: request.type, ok: true, ...result });
+          return;
+        }
+        send({ id: request.id, type: request.type, ok: true, result });
+      },
       (error) =>
         send({
           id: request.id,

@@ -10,6 +10,7 @@ const defaults = {
   language: "auto",
   commandHistoryLimit: 50,
   consoleLevel: "warn",
+  allowDynamicJavaScript: false,
 };
 const translations = {
   en: {
@@ -33,6 +34,9 @@ const translations = {
     consoleWarn: "Warnings and errors",
     consoleError: "Errors only",
     consoleOff: "Disabled",
+    allowDynamicJavaScript: "Allow dynamic JavaScript execution (high risk)",
+    allowDynamicJavaScriptWarning:
+      "Remote commands can run page scripts when enabled. Cookie, storage, credential, and password access is blocked.",
     testBridge: "Test bridge",
     testingBridge: "Testing…",
     bridgeSuccess: "Bridge connection successful",
@@ -59,6 +63,9 @@ const translations = {
     consoleWarn: "警告和错误",
     consoleError: "仅错误",
     consoleOff: "关闭",
+    allowDynamicJavaScript: "允许动态执行 JavaScript（高风险）",
+    allowDynamicJavaScriptWarning:
+      "开启后远程命令可以执行页面脚本；Cookie、Storage、凭据和密码字段访问仍会被阻止。",
     testBridge: "测试 Bridge 连接",
     testingBridge: "正在测试…",
     bridgeSuccess: "Bridge 连接成功",
@@ -73,6 +80,7 @@ const whitelistOrigins = document.querySelector("#whitelistOrigins");
 const language = document.querySelector("#language");
 const commandHistoryLimit = document.querySelector("#commandHistoryLimit");
 const consoleLevel = document.querySelector("#consoleLevel");
+const allowDynamicJavaScript = document.querySelector("#allowDynamicJavaScript");
 const status = document.querySelector("#status");
 const testBridgeButton = document.querySelector("#testBridge");
 const bridgeTestStatus = document.querySelector("#bridgeTestStatus");
@@ -111,6 +119,7 @@ chrome.storage.local.get(defaults).then((values) => {
   language.value = values.language;
   commandHistoryLimit.value = values.commandHistoryLimit;
   consoleLevel.value = values.consoleLevel;
+  allowDynamicJavaScript.checked = values.allowDynamicJavaScript === true;
   applyLanguage(values.language);
 });
 
@@ -157,6 +166,7 @@ async function saveSettings() {
     consoleLevel: ["all", "warn", "error", "off"].includes(consoleLevel.value)
       ? consoleLevel.value
       : "all",
+    allowDynamicJavaScript: allowDynamicJavaScript.checked,
   });
 }
 

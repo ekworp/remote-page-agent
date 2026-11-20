@@ -87,14 +87,15 @@ reached first, it returns `stable: false` and `timedOut: true`. The client
 clamps both periods to safe ranges and uses a fixed `MutationObserver`
 implementation; it does not evaluate caller-supplied code.
 
-`eval_safe` 不建议一开始接受任意代码。优先实现固定命令；如果确实需要任意 JS，至少增加：
+`eval_safe` 默认只接受现有的固定只读 allowlist。用户明确在页面客户端设置中开启动态 JavaScript 后，才允许执行表达式或带 `return` 的脚本；该开关按客户端保存且默认关闭。动态执行仍受以下限制：
 
-- 用户或设备级授权
-- 域名白名单
-- 超时限制
-- 最大返回长度
-- 审计日志
-- 禁止访问 Cookie、Storage、密码字段等敏感数据的策略
+- 脚本最大长度 100,000 字符
+- Promise 结果超时 10 秒
+- 返回值最大序列化长度 1,000,000 字符
+- 禁止访问 `document.cookie`、`localStorage`、`sessionStorage`、IndexedDB、Cache、凭据 API 和密码字段
+- 执行失败继续使用结构化 `{ ok: false, error }` 响应
+
+动态脚本仍能修改页面，开启前应确认 Bridge 仅绑定在受信任的本机或受保护网络上。同步死循环无法被页面客户端强制中断，使用者应避免提交不受控脚本。
 
 ## 页面事件
 

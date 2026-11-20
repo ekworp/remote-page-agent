@@ -64,6 +64,8 @@
               <option value="off" data-i18n="consoleOff">Disabled</option>
             </select>
           </label>
+          <label class="form-check d-flex align-items-start gap-2 mb-1"><input id="allowDynamicJavaScript" class="form-check-input m-0" type="checkbox"> <span class="form-check-label" data-i18n="allowDynamicJavaScript">Allow dynamic JavaScript execution (high risk)</span></label>
+          <p class="form-text text-warning ms-4 mb-0" data-i18n="allowDynamicJavaScriptWarning">Remote commands can run page scripts when enabled. Cookie, storage, credential, and password access is blocked.</p>
         </section>
         <div class="actions d-flex align-items-center gap-3 mt-4">
           <button class="btn btn-primary" type="submit" data-i18n="save">Save settings</button>
