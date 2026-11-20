@@ -624,6 +624,75 @@ function numberParam(value: unknown): number | undefined {
   return undefined;
 }
 
+const accessibilityTreePageSize = 1_000;
+const accessibilityTreeMaxPageSize = 2_000;
+
+type AccessibilityTreePage = {
+  nodes: Array<Record<string, unknown>>;
+  offset: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+};
+
+async function requestAccessibilityTreePage(
+  page: PageConnection,
+  depth: number | undefined,
+  offset: number,
+  limit: number,
+): Promise<AccessibilityTreePage> {
+  const result = await requestAgent(page, "get_accessibility_tree", {
+    ...(depth === undefined ? {} : { depth }),
+    offset,
+    limit,
+  });
+  if (!result.ok) throw new Error(result.error?.message ?? "Accessibility tree failed");
+  if (Array.isArray(result.result)) {
+    return {
+      nodes: result.result as Array<Record<string, unknown>>,
+      offset: 0,
+      limit: result.result.length,
+      total: result.result.length,
+      hasMore: false,
+    };
+  }
+  const pageResult = result.result as Record<string, unknown> | undefined;
+  if (!pageResult || !Array.isArray(pageResult.nodes)) {
+    throw new Error("Accessibility tree response is not paginated");
+  }
+  const nodes = pageResult.nodes as Array<Record<string, unknown>>;
+  const pageOffset = Math.max(0, Math.floor(numberParam(pageResult.offset) ?? offset));
+  const pageLimit = Math.max(1, Math.floor(numberParam(pageResult.limit) ?? limit));
+  const total = Math.max(pageOffset + nodes.length, Math.floor(numberParam(pageResult.total) ?? 0));
+  return {
+    nodes,
+    offset: pageOffset,
+    limit: pageLimit,
+    total,
+    hasMore: pageResult.hasMore === true || pageOffset + nodes.length < total,
+  };
+}
+
+function accessibilityTreePageParams(params: Record<string, unknown> | undefined): {
+  depth?: number;
+  offset: number;
+  limit: number;
+  paged: boolean;
+} {
+  const depth = numberParam(params?.depth);
+  const rawOffset = numberParam(params?.offset);
+  const rawLimit = numberParam(params?.limit);
+  return {
+    ...(depth === undefined ? {} : { depth: Math.max(0, Math.min(64, Math.floor(depth))) }),
+    offset: Math.max(0, Math.floor(rawOffset ?? 0)),
+    limit: Math.max(
+      1,
+      Math.min(accessibilityTreeMaxPageSize, Math.floor(rawLimit ?? accessibilityTreePageSize)),
+    ),
+    paged: params?.offset !== undefined || params?.limit !== undefined,
+  };
+}
+
 function actionabilityCacheKey(
   page: PageConnection,
   backendNodeId: number,
@@ -1731,12 +1800,42 @@ async function handlePageCommand(socket: WebSocket, message: CdpMessage): Promis
     }
     case "Accessibility.getFullAXTree": {
       const page = pageForMessage(message);
-      const depth = message.params?.depth;
-      const result = await requestAgent(page, "get_accessibility_tree", {
-        ...(typeof depth === "number" ? { depth } : {}),
-      });
-      if (!result.ok) throw new Error(result.error?.message ?? "Accessibility tree failed");
-      send(socket, cdpResult(message, { nodes: result.result }));
+      const pageParams = accessibilityTreePageParams(message.params);
+      const firstPage = await requestAccessibilityTreePage(
+        page,
+        pageParams.depth,
+        pageParams.offset,
+        pageParams.limit,
+      );
+      if (pageParams.paged) {
+        send(
+          socket,
+          cdpResult(message, {
+            nodes: firstPage.nodes,
+            offset: firstPage.offset,
+            limit: firstPage.limit,
+            total: firstPage.total,
+            hasMore: firstPage.hasMore,
+          }),
+        );
+        return true;
+      }
+      const nodes = [...firstPage.nodes];
+      let currentPage = firstPage;
+      let nextOffset = currentPage.offset + currentPage.nodes.length;
+      while (currentPage.hasMore && nextOffset < currentPage.total) {
+        const nextPage = await requestAccessibilityTreePage(
+          page,
+          pageParams.depth,
+          nextOffset,
+          pageParams.limit,
+        );
+        if (nextPage.nodes.length === 0 || nextPage.offset !== nextOffset) break;
+        nodes.push(...nextPage.nodes);
+        currentPage = nextPage;
+        nextOffset = currentPage.offset + currentPage.nodes.length;
+      }
+      send(socket, cdpResult(message, { nodes }));
       return true;
     }
     case "Page.getDomSummary": {

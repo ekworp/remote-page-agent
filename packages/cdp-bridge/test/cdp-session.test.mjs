@@ -205,33 +205,50 @@ test("AX uid resolves to a DOM handle and an ordinary link click navigates", asy
     const message = JSON.parse(String(raw));
     if (message.type !== "dom_operation" && message.type !== "dispatch_input") {
       if (message.type === "get_accessibility_tree") {
-        agent.send(
-          JSON.stringify({
-            id: message.id,
-            ok: true,
-            result: [
-              {
-                nodeId: "root",
-                backendDOMNodeId: 0,
-                backendNodeId: 0,
-                ignored: false,
-                role: { type: "role", value: "RootWebArea" },
-                properties: [],
-                childIds: ["42"],
-              },
-              {
-                nodeId: "42",
-                backendDOMNodeId: 42,
-                backendNodeId: 42,
-                ignored: false,
-                role: { type: "role", value: "link" },
-                name: { type: "computedString", value: "Next" },
-                properties: [],
-                childIds: [],
-              },
-            ],
-          }),
-        );
+        const allNodes = [
+          {
+            nodeId: "root",
+            backendDOMNodeId: 0,
+            backendNodeId: 0,
+            ignored: false,
+            role: { type: "role", value: "RootWebArea" },
+            properties: [],
+            childIds: ["42"],
+          },
+          {
+            nodeId: "42",
+            backendDOMNodeId: 42,
+            backendNodeId: 42,
+            ignored: false,
+            role: { type: "role", value: "link" },
+            name: { type: "computedString", value: "Next" },
+            properties: [],
+            childIds: [],
+          },
+          {
+            nodeId: "43",
+            backendDOMNodeId: 43,
+            backendNodeId: 43,
+            ignored: false,
+            role: { type: "role", value: "StaticText" },
+            name: { type: "computedString", value: "More" },
+            properties: [],
+            childIds: [],
+          },
+        ];
+        const offset = Number(message.payload?.offset ?? 0);
+        const limit = Math.min(Number(message.payload?.limit ?? allNodes.length), 2);
+        const paged = message.payload?.offset !== undefined || message.payload?.limit !== undefined;
+        const result = paged
+          ? {
+              nodes: allNodes.slice(offset, offset + limit),
+              offset,
+              limit,
+              total: allNodes.length,
+              hasMore: offset + limit < allNodes.length,
+            }
+          : allNodes;
+        agent.send(JSON.stringify({ id: message.id, ok: true, result }));
         return;
       }
       if (message.type === "get_dom_node") {
@@ -365,6 +382,16 @@ test("AX uid resolves to a DOM handle and an ordinary link click navigates", asy
   assert.ok(contextEvent);
 
   const ax = await send("Accessibility.getFullAXTree", {}, sessionId);
+  assert.equal(ax.nodes.length, 3, "default AX requests aggregate all pages");
+  const axPage = await send("Accessibility.getFullAXTree", { offset: 1, limit: 1 }, sessionId);
+  assert.deepEqual(
+    axPage.nodes.map((node) => node.nodeId),
+    ["42"],
+  );
+  assert.equal(axPage.offset, 1);
+  assert.equal(axPage.limit, 1);
+  assert.equal(axPage.total, 3);
+  assert.equal(axPage.hasMore, true);
   const link = ax.nodes.find((node) => node.role?.value === "link");
   assert.ok(link, "expected one link in the AX tree");
   assert.equal(link.backendDOMNodeId, link.backendNodeId);

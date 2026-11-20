@@ -41,6 +41,14 @@ type AccessibilityNode = {
   childIds: string[];
 };
 
+type AccessibilityTreePage = {
+  nodes: AccessibilityNode[];
+  offset: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+};
+
 type DomSummary = {
   title: string;
   url: string;
@@ -182,6 +190,8 @@ const backendNodeIdByElement = new WeakMap<Element, number>();
 const elementsByBackendNodeId = new Map<number, Element>();
 let accessibilityTreeCache: AccessibilityNode[] | undefined;
 let accessibilityTreeCacheDepth: number | undefined;
+const accessibilityTreePageSize = 1_000;
+const accessibilityTreeMaxPageSize = 2_000;
 
 function backendNodeIdFor(element: Element): number {
   let id = backendNodeIdByElement.get(element);
@@ -1212,7 +1222,6 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
   if (accessibilityTreeCache && accessibilityTreeCacheDepth === depth)
     return accessibilityTreeCache;
   pruneBackendNodeMap();
-  const maxNodes = 3000;
   const nodes: AccessibilityNode[] = [];
   const nodesById = new Map<string, AccessibilityNode>();
   const childrenFor = (element: Element): Element[] => [
@@ -1221,7 +1230,7 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
   ];
   const visit = (element: Element, level: number): string[] => {
     if (element.closest("[data-remote-devtools]")) return [];
-    if (isHiddenFromAccessibilityTree(element) || nodes.length >= maxNodes) return [];
+    if (isHiddenFromAccessibilityTree(element)) return [];
     const backendNodeId = backendNodeIdFor(element);
     const nodeId = String(backendNodeId);
     const children: string[] = [];
@@ -1230,7 +1239,6 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
     if (isDecorativeAccessibilityElement(element, role, name)) return [];
     if (level < depth) {
       for (const child of childrenFor(element)) {
-        if (nodes.length >= maxNodes) break;
         children.push(...visit(child, level + 1));
       }
     }
@@ -1279,6 +1287,29 @@ function accessibilityTree(depth = 32): AccessibilityNode[] {
   accessibilityTreeCache = nodes;
   accessibilityTreeCacheDepth = depth;
   return accessibilityTreeCache;
+}
+
+function accessibilityTreePage(
+  depth = 32,
+  offset = 0,
+  limit = accessibilityTreePageSize,
+): AccessibilityTreePage {
+  const nodes = accessibilityTree(depth);
+  const safeOffset = Math.max(0, Math.floor(Number.isFinite(offset) ? offset : 0));
+  const safeLimit = Math.max(
+    1,
+    Math.min(
+      accessibilityTreeMaxPageSize,
+      Math.floor(Number.isFinite(limit) ? limit : accessibilityTreePageSize),
+    ),
+  );
+  return {
+    nodes: nodes.slice(safeOffset, safeOffset + safeLimit),
+    offset: safeOffset,
+    limit: safeLimit,
+    total: nodes.length,
+    hasMore: safeOffset + safeLimit < nodes.length,
+  };
 }
 
 new MutationObserver(() => {
@@ -2259,7 +2290,15 @@ async function execute(request: AgentRequest, commandSocket: WebSocket): Promise
     case "get_accessibility_tree": {
       const depth =
         typeof payload.depth === "number" ? Math.max(0, Math.min(payload.depth, 64)) : 32;
-      response(commandSocket, request.id, accessibilityTree(depth));
+      const hasPaging = typeof payload.offset === "number" || typeof payload.limit === "number";
+      const result = hasPaging
+        ? accessibilityTreePage(
+            depth,
+            payload.offset as number | undefined,
+            payload.limit as number | undefined,
+          )
+        : accessibilityTree(depth);
+      response(commandSocket, request.id, result);
       return;
     }
     case "get_dom_summary":

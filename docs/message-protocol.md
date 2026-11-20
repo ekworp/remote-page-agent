@@ -55,6 +55,27 @@ wait_for_stable_dom
 close_page
 ```
 
+### Accessibility tree pagination
+
+`Accessibility.getFullAXTree` keeps the standard response shape by default and
+aggregates the userscript's accessibility-tree pages into one `nodes` array.
+For large pages, a CDP client may request one page with the non-standard
+`offset` and `limit` parameters:
+
+```json
+{
+  "method": "Accessibility.getFullAXTree",
+  "params": { "offset": 2000, "limit": 1000 }
+}
+```
+
+A paged response contains `nodes`, `offset`, `limit`, `total`, and `hasMore`.
+The userscript currently uses 1,000 nodes per page and clamps requested pages
+to 2,000 nodes. The default aggregate request remains compatible with clients
+such as `take_snapshot`, while direct paged callers can avoid a large single
+WebSocket response. The snapshot is still an accessibility tree, not a full
+raw DOM serialization.
+
 `close_page` closes the current browser page. The extension uses the browser
 tab API; the userscript requests `window.close()`, which browsers may reject
 for tabs that were not opened by script.

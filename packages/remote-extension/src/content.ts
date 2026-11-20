@@ -4,6 +4,8 @@ let nodesById = new Map();
 let idsByNode = new WeakMap();
 let nextBackendNodeId = 1;
 let accessibilityTreeCache: unknown[] | undefined;
+const accessibilityTreePageSize = 1_000;
+const accessibilityTreeMaxPageSize = 2_000;
 const CONSOLE_MESSAGE_TYPE = "remote-devtools-console";
 const NAVIGATION_MESSAGE_TYPE = "remote-devtools-navigation";
 let consoleLevel = "warn";
@@ -257,13 +259,12 @@ function accessibilityTree() {
   if (accessibilityTreeCache) return accessibilityTreeCache;
   pruneBackendNodes();
   const nodes = [];
-  const maxNodes = 3000;
+  const nodesById = new Map();
   const childrenFor = (element) => [
     ...Array.from(element.children),
     ...(element.shadowRoot ? Array.from(element.shadowRoot.children) : []),
   ];
   const visit = (element, level) => {
-    if (nodes.length >= maxNodes) return [];
     if (!(element instanceof Element) || isHiddenFromAccessibilityTree(element)) return [];
     const id = String(backendNodeIdFor(element));
     const role = roleFor(element);
@@ -272,7 +273,7 @@ function accessibilityTree() {
       level >= 32 ? [] : childrenFor(element).flatMap((child) => visit(child, level + 1));
     if (isInteractiveRole(role)) {
       for (const childId of childIds.slice()) {
-        const child = nodes.find((candidate) => candidate.nodeId === childId);
+        const child = nodesById.get(childId);
         if (child?.role?.value === "generic" && child.name?.value === name) {
           childIds.splice(childIds.indexOf(childId), 1, ...(child.childIds || []));
         }
@@ -295,6 +296,7 @@ function accessibilityTree() {
     };
     if (name) node.name = { type: "computedString", value: name };
     nodes.push(node);
+    nodesById.set(id, node);
     return [id];
   };
   const root = {
@@ -311,6 +313,25 @@ function accessibilityTree() {
   if (document.body) root.childIds = visit(document.body, 0);
   accessibilityTreeCache = nodes;
   return accessibilityTreeCache;
+}
+
+function accessibilityTreePage(offset = 0, limit = accessibilityTreePageSize) {
+  const nodes = accessibilityTree();
+  const safeOffset = Math.max(0, Math.floor(Number.isFinite(offset) ? offset : 0));
+  const safeLimit = Math.max(
+    1,
+    Math.min(
+      accessibilityTreeMaxPageSize,
+      Math.floor(Number.isFinite(limit) ? limit : accessibilityTreePageSize),
+    ),
+  );
+  return {
+    nodes: nodes.slice(safeOffset, safeOffset + safeLimit),
+    offset: safeOffset,
+    limit: safeLimit,
+    total: nodes.length,
+    hasMore: safeOffset + safeLimit < nodes.length,
+  };
 }
 
 new MutationObserver(() => {
@@ -640,8 +661,10 @@ async function commandResult(message) {
         Number(payload.quietMs ?? 100),
         Number(payload.maxWaitMs ?? 3000),
       );
-    case "get_accessibility_tree":
-      return accessibilityTree();
+    case "get_accessibility_tree": {
+      const hasPaging = typeof payload.offset === "number" || typeof payload.limit === "number";
+      return hasPaging ? accessibilityTreePage(payload.offset, payload.limit) : accessibilityTree();
+    }
     case "navigate":
       if (typeof payload.url !== "string") throw new Error("url is required");
       setTimeout(() => {
