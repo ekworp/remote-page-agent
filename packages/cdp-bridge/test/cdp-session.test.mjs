@@ -1020,6 +1020,7 @@ test("page targets stay unique across connect, reconnect, navigation and close",
     ["page-a"],
     "HTTP page enumeration includes the page after agent hello",
   );
+
   const attachedA = await waitUntil(
     () =>
       events.find(
@@ -1028,6 +1029,23 @@ test("page targets stay unique across connect, reconnect, navigation and close",
           event.params?.targetInfo?.targetId === "page-a",
       ),
     "attachedToTarget for page-a",
+  );
+
+  events.length = 0;
+  agents[0].send(
+    JSON.stringify({
+      type: "page_event",
+      method: "Page.lifecycleEvent",
+      params: { name: "networkAlmostIdle" },
+      url: "https://a.example/",
+      title: "Page A",
+    }),
+  );
+  await sleep(50);
+  assert.equal(
+    events.filter((event) => event.method === "Target.targetInfoChanged").length,
+    0,
+    "unchanged page metadata must not emit targetInfoChanged",
   );
 
   const second = await connectAgent("page-b", "https://b.example/", "Page B");

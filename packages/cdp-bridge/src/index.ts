@@ -1920,10 +1920,14 @@ function handleAgent(socket: WebSocket): void {
     if (message.type === "page_event" && page && typeof message.method === "string") {
       if (!allowPageEvent(page, "page")) return;
       clearPageActionabilityCache(page.pageId);
+      const previousUrl = page.url;
+      const previousTitle = page.title;
       if (typeof message.url === "string") page.url = message.url;
       if (typeof message.title === "string") page.title = message.title;
-      for (const client of clients) {
-        send(client, cdpEvent("Target.targetInfoChanged", { targetInfo: pageTarget(page) }));
+      if (page.url !== previousUrl || page.title !== previousTitle) {
+        for (const client of clients) {
+          send(client, cdpEvent("Target.targetInfoChanged", { targetInfo: pageTarget(page) }));
+        }
       }
       broadcastPageEvent(
         page.pageId,

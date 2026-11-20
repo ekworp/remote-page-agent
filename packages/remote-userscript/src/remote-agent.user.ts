@@ -158,6 +158,8 @@ const pageIdStorageKey = "remote-devtools-page-id";
 const browserId = GM_getValue<string>(browserIdStorageKey, "") || crypto.randomUUID();
 GM_setValue(browserIdStorageKey, browserId);
 let pageId = "";
+let lastAnnouncedUrl = "";
+let lastAnnouncedTitle = "";
 const namedPageId = window.name.startsWith("remote-devtools:")
   ? window.name.slice("remote-devtools:".length)
   : "";
@@ -908,9 +910,9 @@ function configureBridge(): void {
 
 GM_registerMenuCommand(translate("configure"), configureBridge);
 
-function send(message: unknown): void {
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(message));
+function send(message: unknown, targetSocket = socket): void {
+  if (targetSocket?.readyState === WebSocket.OPEN) {
+    targetSocket.send(JSON.stringify(message));
   }
 }
 
@@ -919,24 +921,32 @@ function pageEvent(method: string, params: Record<string, unknown>): void {
   send({ type: "page_event", method, params, url: location.href, title: document.title });
 }
 
-function response(id: string, result: unknown, meta?: Record<string, unknown>): void {
+function response(
+  targetSocket: WebSocket | undefined,
+  id: string,
+  result: unknown,
+  meta?: Record<string, unknown>,
+): void {
   completeCommand(id, "success");
   touchTemporaryGrant();
-  send({ id, ok: true, result, ...meta });
+  send({ id, ok: true, result, ...meta }, targetSocket);
 }
 
-function failure(id: string, error: unknown): void {
+function failure(id: string, error: unknown, targetSocket?: WebSocket): void {
   completeCommand(id, "error");
   const message = error instanceof Error ? error.message : String(error);
   showNotice(translate("commandFailed", { message }), "error");
-  send({
-    id,
-    ok: false,
-    error: {
-      code: "COMMAND_FAILED",
-      message,
+  send(
+    {
+      id,
+      ok: false,
+      error: {
+        code: "COMMAND_FAILED",
+        message,
+      },
     },
-  });
+    targetSocket,
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2161,15 +2171,18 @@ function waitForStableDom(quietMs = 100, maxWaitMs = 3000): Promise<Record<strin
   });
 }
 
-async function execute(request: AgentRequest): Promise<void> {
+async function execute(request: AgentRequest, commandSocket: WebSocket): Promise<void> {
   const payload = request.payload ?? {};
   switch (request.type) {
     case "get_page_info":
-      response(request.id, { title: document.title, url: location.href });
+      response(commandSocket, request.id, { title: document.title, url: location.href });
       return;
     case "query": {
       const element = selector(payload);
-      response(request.id, { text: element.textContent ?? "", html: element.outerHTML });
+      response(commandSocket, request.id, {
+        text: element.textContent ?? "",
+        html: element.outerHTML,
+      });
       return;
     }
     case "click":
@@ -2180,7 +2193,7 @@ async function execute(request: AgentRequest): Promise<void> {
         const scheduled = clickMayNavigate(target);
         if (scheduled) scheduleElementClick(element);
         else dispatchElementClick(target);
-        response(request.id, {
+        response(commandSocket, request.id, {
           clicked: true,
           scheduledClick: scheduled,
           dispatched: !scheduled,
@@ -2205,7 +2218,7 @@ async function execute(request: AgentRequest): Promise<void> {
       const scheduled = clickMayNavigate(target);
       if (scheduled) scheduleElementClick(element);
       else dispatchElementClick(target);
-      response(request.id, {
+      response(commandSocket, request.id, {
         clicked: true,
         scheduledClick: scheduled,
         dispatched: !scheduled,
@@ -2223,7 +2236,7 @@ async function execute(request: AgentRequest): Promise<void> {
       if (!isEditableElement(element)) {
         throw new Error("Element is not editable");
       }
-      response(request.id, fillElement(element, value));
+      response(commandSocket, request.id, fillElement(element, value));
       return;
     }
     case "insert_text": {
@@ -2233,27 +2246,28 @@ async function execute(request: AgentRequest): Promise<void> {
       if (!element || !isEditableElement(element)) {
         throw new Error("Active element is not editable");
       }
-      response(request.id, insertText(element, value));
+      response(commandSocket, request.id, insertText(element, value));
       return;
     }
     case "scroll": {
       const x = typeof payload.x === "number" ? payload.x : 0;
       const y = typeof payload.y === "number" ? payload.y : 600;
       window.scrollBy(x, y);
-      response(request.id, { x: window.scrollX, y: window.scrollY });
+      response(commandSocket, request.id, { x: window.scrollX, y: window.scrollY });
       return;
     }
     case "get_accessibility_tree": {
       const depth =
         typeof payload.depth === "number" ? Math.max(0, Math.min(payload.depth, 64)) : 32;
-      response(request.id, accessibilityTree(depth));
+      response(commandSocket, request.id, accessibilityTree(depth));
       return;
     }
     case "get_dom_summary":
-      response(request.id, domSummary());
+      response(commandSocket, request.id, domSummary());
       return;
     case "wait_for_stable_dom":
       response(
+        commandSocket,
         request.id,
         await waitForStableDom(Number(payload.quietMs ?? 100), Number(payload.maxWaitMs ?? 3000)),
       );
@@ -2262,14 +2276,14 @@ async function execute(request: AgentRequest): Promise<void> {
       if (typeof payload.url !== "string") {
         throw new Error("url is required");
       }
-      response(request.id, { url: payload.url });
+      response(commandSocket, request.id, { url: payload.url });
       window.setTimeout(() => {
         location.href = payload.url as string;
       }, 0);
       return;
     }
     case "close_page":
-      response(request.id, { closing: true });
+      response(commandSocket, request.id, { closing: true });
       window.setTimeout(() => window.close(), 0);
       return;
     case "open_page": {
@@ -2284,24 +2298,24 @@ async function execute(request: AgentRequest): Promise<void> {
         const popup = window.open(targetUrl, `remote-devtools:${payload.pageId}`);
         if (!popup) throw new Error("The browser blocked opening a new page");
       }
-      response(request.id, { opened: true, pageId: payload.pageId });
+      response(commandSocket, request.id, { opened: true, pageId: payload.pageId });
       return;
     }
     case "history_back":
-      response(request.id, { ok: true });
+      response(commandSocket, request.id, { ok: true });
       window.setTimeout(() => history.back(), 0);
       return;
     case "reload":
-      response(request.id, { ok: true });
+      response(commandSocket, request.id, { ok: true });
       window.setTimeout(() => location.reload(), 0);
       return;
     case "stop_loading":
       window.stop();
-      response(request.id, { ok: true });
+      response(commandSocket, request.id, { ok: true });
       return;
     case "dispatch_input": {
       const result = dispatchInput(payload);
-      response(request.id, result);
+      response(commandSocket, request.id, result);
       return;
     }
     case "click_backend_node": {
@@ -2312,7 +2326,7 @@ async function execute(request: AgentRequest): Promise<void> {
       const scheduled = clickMayNavigate(target);
       if (scheduled) scheduleElementClick(element);
       else dispatchElementClick(target);
-      response(request.id, {
+      response(commandSocket, request.id, {
         clicked: true,
         scheduledClick: scheduled,
         dispatched: !scheduled,
@@ -2325,13 +2339,13 @@ async function execute(request: AgentRequest): Promise<void> {
       const backendNodeId = Number(payload.backendNodeId);
       const element = elementByBackendNodeId(backendNodeId);
       if (!element) throw new Error("DOM node not found");
-      response(request.id, domRect(resolveClickTarget(element)));
+      response(commandSocket, request.id, domRect(resolveClickTarget(element)));
       return;
     }
     case "dom_operation": {
       const backendNodeId = Number(payload.backendNodeId);
       const value = await domOperation(String(payload.operation ?? ""), backendNodeId, payload);
-      response(request.id, value);
+      response(commandSocket, request.id, value);
       return;
     }
     case "get_dom_node": {
@@ -2339,7 +2353,7 @@ async function execute(request: AgentRequest): Promise<void> {
       const element = elementByBackendNodeId(backendNodeId);
       if (!element) throw new Error("DOM node not found");
       const depth = typeof payload.depth === "number" ? payload.depth : 0;
-      response(request.id, {
+      response(commandSocket, request.id, {
         ...domNode(element, depth),
         frameId: pageId,
       });
@@ -2348,6 +2362,7 @@ async function execute(request: AgentRequest): Promise<void> {
     case "get_dom_document": {
       const depth = typeof payload.depth === "number" ? payload.depth : 4;
       response(
+        commandSocket,
         request.id,
         document.documentElement ? domNode(document.documentElement, depth) : null,
       );
@@ -2357,10 +2372,10 @@ async function execute(request: AgentRequest): Promise<void> {
       const selectorValue = typeof payload.selector === "string" ? payload.selector : "";
       const element = document.querySelector(selectorValue);
       if (!element) {
-        response(request.id, { nodeId: 0, html: "" });
+        response(commandSocket, request.id, { nodeId: 0, html: "" });
         return;
       }
-      response(request.id, {
+      response(commandSocket, request.id, {
         nodeId: backendNodeIdFor(element),
         backendNodeId: backendNodeIdFor(element),
         html: element.outerHTML,
@@ -2373,14 +2388,18 @@ async function execute(request: AgentRequest): Promise<void> {
       const element = backendNodeId
         ? elementByBackendNodeId(backendNodeId)
         : document.documentElement;
-      response(request.id, element?.outerHTML ?? "");
+      response(commandSocket, request.id, element?.outerHTML ?? "");
       return;
     }
     case "find_text": {
       if (typeof payload.text !== "string") throw new Error("text is required");
       const mode = payload.mode === "aria" ? "aria" : "text";
       const element = findTextElement(payload.text, mode);
-      response(request.id, element ? { backendNodeId: backendNodeIdFor(element) } : null);
+      response(
+        commandSocket,
+        request.id,
+        element ? { backendNodeId: backendNodeIdFor(element) } : null,
+      );
       return;
     }
     case "eval_safe": {
@@ -2389,7 +2408,7 @@ async function execute(request: AgentRequest): Promise<void> {
       }
       const code = payload.code.trim();
       if (isFunctionExpression(code) && !code.includes("JSON.stringify") && !code.endsWith(")()")) {
-        response(request.id, undefined, {
+        response(commandSocket, request.id, undefined, {
           resultType: "function",
           functionSource: code,
         });
@@ -2400,6 +2419,7 @@ async function execute(request: AgentRequest): Promise<void> {
           ? (document.documentElement?.textContent ?? "NO BODY")
           : (document.body?.innerText ?? "NO BODY");
         response(
+          commandSocket,
           request.id,
           code.includes("JSON.stringify") ? JSON.stringify(bodyText) : bodyText,
           {
@@ -2412,11 +2432,13 @@ async function execute(request: AgentRequest): Promise<void> {
         const value = code.includes("JSON.stringify")
           ? JSON.stringify(document.title)
           : document.title;
-        response(request.id, value, { resultType: "string" });
+        response(commandSocket, request.id, value, { resultType: "string" });
         return;
       }
       if (code.includes("location.href") || code.includes("location.toString")) {
-        response(request.id, JSON.stringify(location.href), { resultType: "string" });
+        response(commandSocket, request.id, JSON.stringify(location.href), {
+          resultType: "string",
+        });
         return;
       }
       throw new Error(
@@ -2442,17 +2464,24 @@ function connect(): void {
   const currentSocket = new WebSocket(bridgeUrl);
   socket = currentSocket;
   currentSocket.addEventListener("open", () => {
+    if (socket !== currentSocket) {
+      currentSocket.close(1000, "Superseded by a newer connection");
+      return;
+    }
     showNotice(translate("connected"), "success");
-    send({
-      type: "hello",
-      browserId,
-      pageId,
-      token: getBridgeToken(),
-      url: location.href,
-      title: document.title,
-    });
+    currentSocket.send(
+      JSON.stringify({
+        type: "hello",
+        browserId,
+        pageId,
+        token: getBridgeToken(),
+        url: location.href,
+        title: document.title,
+      }),
+    );
   });
   currentSocket.addEventListener("message", (event) => {
+    if (socket !== currentSocket) return;
     try {
       const parsed: unknown = JSON.parse(String(event.data));
       if (!isRecord(parsed)) throw new Error("Incoming message must be an object");
@@ -2480,15 +2509,17 @@ function connect(): void {
         throw new Error("Incoming command requires a non-empty id");
       }
       if (typeof message.type !== "string" || !message.type) {
-        failure(message.id, new Error("Incoming command requires a non-empty type"));
+        failure(message.id, new Error("Incoming command requires a non-empty type"), currentSocket);
         return;
       }
       if (message.payload !== undefined && !isRecord(message.payload)) {
-        failure(message.id, new Error("Command payload must be an object"));
+        failure(message.id, new Error("Command payload must be an object"), currentSocket);
         return;
       }
       recordCommand(message.id, message.type);
-      void execute(message).catch((error) => failure(message.id, error));
+      void execute(message, currentSocket).catch((error) =>
+        failure(message.id, error, currentSocket),
+      );
     } catch (error) {
       console.error("Remote DevTools message error", error);
     }
@@ -2566,17 +2597,22 @@ window.addEventListener("load", () => {
   });
 });
 function announceNavigation(): void {
+  const url = location.href;
+  const title = document.title;
+  if (url === lastAnnouncedUrl && title === lastAnnouncedTitle) return;
+  lastAnnouncedUrl = url;
+  lastAnnouncedTitle = title;
   pageEvent("Page.frameNavigated", {
     frame: {
       id: pageId,
-      url: location.href,
+      url,
       securityOrigin: location.origin,
       mimeType: "text/html",
     },
   });
   pageEvent("Page.navigatedWithinDocument", {
     frameId: pageId,
-    url: location.href,
+    url,
   });
   pageEvent("Page.lifecycleEvent", {
     frameId: pageId,
@@ -2592,6 +2628,20 @@ function scheduleNavigationAnnouncement(): void {
 
 window.addEventListener("popstate", scheduleNavigationAnnouncement);
 window.addEventListener("hashchange", scheduleNavigationAnnouncement);
+
+let observedTitle: HTMLTitleElement | null = null;
+const titleObserver = new MutationObserver(() => announceNavigation());
+const observeTitle = (): void => {
+  const title = document.querySelector("title");
+  if (!title || title === observedTitle) return;
+  observedTitle = title;
+  titleObserver.observe(title, { childList: true, characterData: true, subtree: true });
+  announceNavigation();
+};
+observeTitle();
+if (document.head) {
+  new MutationObserver(observeTitle).observe(document.head, { childList: true });
+}
 
 const originalPushState = history.pushState;
 history.pushState = function (

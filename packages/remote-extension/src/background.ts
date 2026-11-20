@@ -12,6 +12,7 @@ type TabConnection = {
   attempt: number;
   closedByExtension: boolean;
   connected: boolean;
+  connecting: boolean;
 };
 type BridgeMessage = {
   type?: string;
@@ -23,6 +24,8 @@ type BridgeMessage = {
 type StoredConnection = { tabId: number; pageId: string };
 
 const connections = new Map<number, TabConnection>();
+const connectLocks = new Map<number, Promise<void>>();
+const connectGenerations = new Map<number, number>();
 let browserIdPromise: Promise<string> | undefined;
 let offscreenReady = false;
 let offscreenEnsurePromise: Promise<boolean> | undefined;
@@ -272,32 +275,45 @@ async function popupState() {
 
 function closeConnection(tabId) {
   const connection = connections.get(tabId);
+  connectGenerations.set(tabId, (connectGenerations.get(tabId) || 0) + 1);
   if (!connection) return;
   connection.closedByExtension = true;
+  connection.connecting = false;
+  connection.connected = false;
   void sendToOffscreen({ type: "disconnect_bridge", tabId }).catch(() => {});
   connections.delete(tabId);
   void saveStoredConnections();
   updateActionStatus();
 }
 
-async function connectTab(tabId, tab, requestedPageId, force = false) {
+async function connectTabInternal(tabId, tab, requestedPageId, force = false) {
   let connection = connections.get(tabId);
   const nextPageId =
     typeof requestedPageId === "string" && requestedPageId
       ? requestedPageId
       : connection?.pageId || crypto.randomUUID();
-  if (!force && connection?.connected && connection.pageId === nextPageId) {
-    void chrome.tabs
-      .sendMessage(tabId, { type: "bridge_ready", pageId: connection.pageId })
-      .catch(() => {});
+  if (
+    !force &&
+    connection?.pageId === nextPageId &&
+    (connection.connected || connection.connecting)
+  ) {
+    if (connection.connected) {
+      void chrome.tabs
+        .sendMessage(tabId, { type: "bridge_ready", pageId: connection.pageId })
+        .catch(() => {});
+    }
     return;
   }
+  const generation = (connectGenerations.get(tabId) || 0) + 1;
+  connectGenerations.set(tabId, generation);
+  const isCurrentRequest = () => connectGenerations.get(tabId) === generation;
   if (connection?.connected && connection.pageId !== nextPageId) {
     connection.connected = false;
     void sendToOffscreen({ type: "disconnect_bridge", tabId }).catch(() => {});
   }
 
   const settings = await getSettings();
+  if (!isCurrentRequest()) return;
   if (!settings.bridgeUrl) return;
   if (settings.whitelistEnabled) {
     const origin = originForUrl(tab?.url);
@@ -307,29 +323,56 @@ async function connectTab(tabId, tab, requestedPageId, force = false) {
     );
     if (!settings.whitelistOrigins.includes(origin) && !temporaryAccess) return;
   }
+  if (!isCurrentRequest()) return;
   await chrome.alarms.clear(`${RECONNECT_ALARM_PREFIX}${tabId}`);
+  if (!isCurrentRequest()) return;
   connection = {
     tabId,
     pageId: nextPageId,
     attempt: connection?.attempt || 0,
     closedByExtension: false,
     connected: false,
+    connecting: true,
   };
   connections.set(tabId, connection);
   void saveStoredConnections();
   updateActionStatus();
-  await sendToOffscreen({
-    type: "connect_bridge",
-    tabId,
-    pageId: connection.pageId,
-    settings: {
-      bridgeUrl: settings.bridgeUrl,
-      bridgeToken: settings.bridgeToken,
-    },
-    browserId: await getBrowserId(),
-    url: tab?.url || "about:blank",
-    title: tab?.title || "Remote Page",
+  const browserId = await getBrowserId();
+  if (!isCurrentRequest()) return;
+  try {
+    await sendToOffscreen({
+      type: "connect_bridge",
+      tabId,
+      pageId: connection.pageId,
+      settings: {
+        bridgeUrl: settings.bridgeUrl,
+        bridgeToken: settings.bridgeToken,
+      },
+      browserId,
+      url: tab?.url || "about:blank",
+      title: tab?.title || "Remote Page",
+    });
+  } catch (error) {
+    if (connections.get(tabId) === connection) {
+      connection.connecting = false;
+      connection.connected = false;
+      updateActionStatus();
+    }
+    throw error;
+  }
+}
+
+function connectTab(tabId, tab, requestedPageId, force = false) {
+  const previous = connectLocks.get(tabId) ?? Promise.resolve();
+  const current = previous
+    .catch(() => {})
+    .then(() => connectTabInternal(tabId, tab, requestedPageId, force));
+  let tracked: Promise<void>;
+  tracked = current.finally(() => {
+    if (connectLocks.get(tabId) === tracked) connectLocks.delete(tabId);
   });
+  connectLocks.set(tabId, tracked);
+  return tracked;
 }
 
 function sendToBridge(tabId, message) {
@@ -430,11 +473,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         attempt: 0,
         closedByExtension: false,
         connected: false,
+        connecting: false,
       };
       connections.set(message.tabId, connection);
     }
     if (connection) {
       connection.connected = message.status === "connected";
+      connection.connecting = false;
       if (message.status === "connected") {
         connection.attempt = 0;
       }
@@ -458,6 +503,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         attempt: 0,
         closedByExtension: false,
         connected: false,
+        connecting: false,
       };
       connections.set(message.tabId, connection);
     }

@@ -60,7 +60,16 @@ function connect(config: NonNullable<BridgeConnection["config"]>) {
 
   const socket = new WebSocket(config.bridgeUrl);
   connection.socket = socket;
+  const isCurrentSocket = () =>
+    connections.get(config.tabId) === connection &&
+    connection.socket === socket &&
+    !connection.closedByExtension;
+
   socket.addEventListener("open", () => {
+    if (!isCurrentSocket()) {
+      socket.close(1000, "Superseded by a newer connection");
+      return;
+    }
     connection.attempt = 0;
     socket.send(
       JSON.stringify({
@@ -80,6 +89,7 @@ function connect(config: NonNullable<BridgeConnection["config"]>) {
     });
   });
   socket.addEventListener("message", (event) => {
+    if (!isCurrentSocket()) return;
     try {
       notifyBackground({
         type: "offscreen_bridge_message",
@@ -92,7 +102,7 @@ function connect(config: NonNullable<BridgeConnection["config"]>) {
     }
   });
   socket.addEventListener("close", () => {
-    if (connections.get(config.tabId)?.socket !== socket || connection.closedByExtension) return;
+    if (!isCurrentSocket()) return;
     notifyBackground({
       type: "offscreen_bridge_status",
       tabId: config.tabId,
@@ -102,6 +112,7 @@ function connect(config: NonNullable<BridgeConnection["config"]>) {
     scheduleReconnect(config.tabId);
   });
   socket.addEventListener("error", () => {
+    if (!isCurrentSocket()) return;
     // The close event performs the reconnect scheduling.
   });
 }
